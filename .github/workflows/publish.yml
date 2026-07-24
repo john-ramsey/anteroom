@@ -1,7 +1,12 @@
 # Publish `anteroom` to npm via TRUSTED PUBLISHING (OIDC) — no token, no secret.
-# npm authenticates this workflow through GitHub's OIDC id-token and ties the published tarball to
-# THIS repo's exact commit + run (provenance is automatic), so anyone can verify the code that runs
-# on their machine. Requires `id-token: write` + npm CLI >= 11.5.1 + Node >= 22.14.0.
+# npm authenticates through GitHub's OIDC id-token and ties the published tarball to THIS repo's
+# exact commit + run (provenance is automatic), so anyone can verify the code that runs on their
+# machine. Requires npm CLI >= 11.5.1 (bundled with Node 24).
+#
+# SECURITY: with trusted publishing the OIDC token IS the npm publish credential, so it is isolated
+# to a minimal `publish` job that runs NO dependency/build code — only trusted first-party actions
+# + `npm publish`. The `build` job (npm install + lifecycle scripts) has NO id-token; it only
+# emits a packed tarball as an artifact. This blocks a malicious dependency from minting the token.
 #
 # One-time setup on npmjs.com/package/anteroom/access: add a GitHub Actions trusted publisher
 # (repository john-ramsey/anteroom, workflow file publish.yml). OIDC can't do a package's FIRST
@@ -11,24 +16,41 @@ on:
   release:
     types: [published]
   workflow_dispatch: {}
-permissions:
-  contents: read
-  id-token: write # required for npm trusted publishing (OIDC) + provenance
 jobs:
-  publish:
+  build:
+    permissions:
+      contents: read # NO id-token here: install/build code must never see the publish credential
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
-        # NO registry-url: it writes an .npmrc _authToken line that shadows OIDC — npm then
-        # skips the trusted-publishing exchange, tries the empty token, and (with 2FA on the
-        # account) hangs waiting for an OTP. npm defaults to the public registry anyway.
         with:
-          node-version: 24 # >= 22.14.0, required by trusted publishing
-      - run: npm install -g npm@latest # trusted publishing needs npm >= 11.5.1
+          node-version: 24
       - run: npm install
       - run: npm run build
         env:
           # Public-by-design value (no secret): baked into the bundle at build time.
           ANTEROOM_GITHUB_CLIENT_ID: ${{ vars.ANTEROOM_GITHUB_CLIENT_ID }}
-      - run: npm publish --access public # OIDC auth via id-token; provenance is automatic
+      - run: npm pack --ignore-scripts # dist/ is already built above; don't re-run lifecycle scripts
+      - uses: actions/upload-artifact@v4
+        with:
+          name: npm-package
+          path: anteroom-*.tgz
+          if-no-files-found: error
+  publish:
+    needs: build
+    permissions:
+      contents: read
+      id-token: write # the npm publish credential — scoped to this code-free job only
+    runs-on: ubuntu-latest
+    steps:
+      # No dependency code runs here — only trusted first-party actions plus the publish command, so
+      # nothing can reach the OIDC token. (No registry-url: its .npmrc _authToken shadows OIDC. Node
+      # 24 bundles npm >= 11.5.1.)
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@v4
+        with:
+          name: npm-package
+      - run: npm publish anteroom-*.tgz --access public --ignore-scripts # OIDC auth; provenance automatic
