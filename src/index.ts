@@ -534,7 +534,12 @@ async function main(): Promise<void> {
 
 // `anteroom setup` wires the hooks into Claude/Codex; everything else launches the game client.
 if (process.argv[2] === "setup") {
-  void runSetup(process.argv.slice(3));
+  // setup can await user input (the interactive apply prompt), so surface any failure with an exit
+  // code instead of an unhandled rejection. No process.exit(): let buffered output flush first.
+  runSetup(process.argv.slice(3)).catch((err) => {
+    console.error(err);
+    process.exitCode = 1;
+  });
 } else {
   void main();
 }

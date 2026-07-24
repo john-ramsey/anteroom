@@ -9,6 +9,20 @@ npm i -g anteroom      # or: brew install john-ramsey/tap/anteroom  (installs No
 anteroom --find --game blackjack --ante 50
 ```
 
+## Also the Claude Code + Codex plugin marketplace
+
+This repo doubles as the plugin marketplace — play while a long agent turn runs and get pinged in-app
+when it finishes:
+
+```
+/plugin marketplace add john-ramsey/anteroom          # Claude Code
+/plugin install anteroom@anteroom
+```
+
+Codex: `codex plugin marketplace add john-ramsey/anteroom` → `codex plugin add anteroom@anteroom`. The
+plugin (under `anteroom/`) only wires the hooks that launch the client above; it reads no agent data.
+See [`DISCLAIMER.md`](./DISCLAIMER.md) for play-money terms & privacy.
+
 ## This repo is the public source of what `npx anteroom` runs
 
 The npm package ships a single bundled file (`dist/anteroom.mjs`). **This repository is that
@@ -36,4 +50,4 @@ npm run build          # -> dist/anteroom.mjs
 
 [npm provenance]: https://docs.npmjs.com/generating-provenance-statements
 
-MIT © John Ramsey. v1.0.1.
+MIT © John Ramsey. v1.0.2.

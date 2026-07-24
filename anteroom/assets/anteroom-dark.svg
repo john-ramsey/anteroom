@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- The Anteroom mark: a circled A. Geometry matches the Anteroom site + client logo, so the
+     plugin card matches the site and the client. Dark-surface variant: the same
+     secondary accent lifted for contrast on a dark card, matching how the bundled Codex plugins
+     ship a brighter logoDark than logo. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#7cb8f2" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+  <circle cx="12" cy="12" r="9"/>
+  <path d="M9 16l3-8 3 8"/>
+  <path d="M10.1 13.4h3.8"/>
+</svg>

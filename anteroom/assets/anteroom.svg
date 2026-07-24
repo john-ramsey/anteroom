@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- The Anteroom mark: a circled A. Geometry matches the Anteroom site + client logo, so the
+     plugin card matches the site and the client. Ink is the theme's SECONDARY accent (#4c9eeb) —
+     the colour this client already uses for Codex, so the icon and the Codex HUD line agree.
+     Claude keeps the primary accent (#f2933c), but Claude Code has no icon surface to put it on. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#4c9eeb" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+  <circle cx="12" cy="12" r="9"/>
+  <path d="M9 16l3-8 3 8"/>
+  <path d="M10.1 13.4h3.8"/>
+</svg>

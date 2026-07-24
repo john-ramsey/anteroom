@@ -10,22 +10,31 @@
  * clobbering existing config. Codex reads a user-level `hooks.json` in the same JSON schema Claude
  * uses, so there is nothing left to paste.)
  *
- * NOTE (hub follow-up): hook scripts are resolved relative to the repo today (local/dev). When the
- * client is published, it will bundle the scripts and resolve them inside its own install dir;
- * `ANTEROOM_HOOKS_DIR` overrides the location in the meantime.
+ * Hook-script resolution (in priority order): `ANTEROOM_HOOKS_DIR` if set; else the scripts BUNDLED
+ * next to the published bin (`<pkg>/hooks/scripts`, staged by the sync + shipped in `files`); else,
+ * in the monorepo, the sibling plugin's `packages/plugin/scripts`.
  */
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 
-/** Absolute path to the directory holding the hook scripts (on-prompt.mjs, on-idle.mjs, …). */
-export function resolveHooksDir(env: NodeJS.ProcessEnv = process.env): string {
+/** Absolute path to the directory holding the hook scripts (on-prompt.mjs, on-idle.mjs, …). `baseDir`
+ *  is the resolver's anchor (the bin's dir in a published install, this file's dir in dev) — injected
+ *  for tests; defaults to this module's location. */
+export function resolveHooksDir(
+  env: NodeJS.ProcessEnv = process.env,
+  baseDir: string = dirname(fileURLToPath(import.meta.url)),
+): string {
   if (env.ANTEROOM_HOOKS_DIR) return resolve(env.ANTEROOM_HOOKS_DIR);
-  // Local/dev: resolve the sibling plugin's scripts dir relative to this file.
-  const here = dirname(fileURLToPath(import.meta.url));
-  return resolve(here, "..", "..", "plugin", "scripts");
+  // Published: the client bundles the hook scripts beside the bin at <pkg>/hooks/scripts (baseDir is
+  // <pkg>/dist there, so ".." lands on the package root).
+  const bundled = resolve(baseDir, "..", "hooks", "scripts");
+  if (existsSync(join(bundled, "on-prompt.mjs"))) return bundled;
+  // Dev/monorepo: the sibling plugin's scripts dir (baseDir is packages/client/src).
+  return resolve(baseDir, "..", "..", "plugin", "scripts");
 }
 
 const q = (s: string): string => `node "${s}"`;
@@ -148,8 +157,57 @@ export function detectAgents(
 
 const log = (s = ""): void => console.log(s);
 
-export async function runSetup(argv: string[]): Promise<void> {
-  const write = argv.includes("--write");
+/** Injectable I/O for the interactive apply prompt. `confirm` present ⇒ ask before each change;
+ *  absent ⇒ non-interactive (pure dry-run). Tests pass a fake `confirm`; the default reads a TTY. */
+export interface SetupIO {
+  confirm?: (question: string) => Promise<boolean>;
+}
+
+/** Ask a y/N question on the real terminal (one readline per prompt, closed after). */
+function ttyConfirm(question: string): Promise<boolean> {
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  return new Promise<boolean>((resolve) => {
+    rl.question(question, (a) => {
+      rl.close();
+      resolve(/^y(es)?$/i.test(a.trim()));
+    });
+  });
+}
+
+/** On a real TTY, setup asks before each change; piped / non-TTY (CI, the Homebrew formula's
+ *  `anteroom setup 2>&1` test) stays a pure dry-run so it never blocks on input. */
+function defaultSetupIo(): SetupIO {
+  return { confirm: process.stdin.isTTY && process.stdout.isTTY ? ttyConfirm : undefined };
+}
+
+/** Apply `content` to `path` (backing up any existing file) or just preview it, per the mode.
+ *  Returns whether it wrote. `--write` writes straight off; otherwise it previews and, if a
+ *  `confirm` is available and the user says yes, writes. */
+async function decideWrite(
+  label: string,
+  path: string,
+  content: Record<string, unknown>,
+  preview: Record<string, unknown>,
+  forceWrite: boolean,
+  confirm?: (q: string) => Promise<boolean>,
+): Promise<boolean> {
+  if (!forceWrite) {
+    log("  would add:");
+    log(indent(JSON.stringify(preview, null, 2)));
+    if (!confirm || !(await confirm(`  Apply these hooks to ${label}? [y/N] `))) return false;
+  }
+  if (existsSync(path)) backupFile(path);
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, JSON.stringify(content, null, 2) + "\n");
+  log(`  ✓ wrote hooks${existsSync(`${path}.bak`) ? ` (backup: ${path}.bak)` : ""}`);
+  return true;
+}
+
+export async function runSetup(argv: string[], io: SetupIO = defaultSetupIo()): Promise<void> {
+  const forceWrite = argv.includes("--write") || argv.includes("--yes");
+  const forceDry = argv.includes("--dry-run");
+  // Prompt only when neither flag forces the outcome AND we have a way to ask (a TTY / injected io).
+  const confirm = !forceWrite && !forceDry && typeof io.confirm === "function" ? io.confirm : undefined;
   const hooksDir = resolveHooksDir();
   const agents = detectAgents();
   const wantClaude = argv.includes("--claude") || (!argv.includes("--codex") && agents.claude);
@@ -160,47 +218,35 @@ export async function runSetup(argv: string[]): Promise<void> {
   if (!existsSync(join(hooksDir, "on-prompt.mjs"))) {
     log(`  ⚠ hook scripts not found there. Set ANTEROOM_HOOKS_DIR to the plugin's scripts/ dir.`);
   }
-  log(write ? "  mode: WRITE (applying changes)" : "  mode: dry run (pass --write to apply them)");
+  log(
+    forceWrite
+      ? "  mode: WRITE (applying changes)"
+      : confirm
+        ? "  mode: interactive — you'll be asked before each change"
+        : "  mode: dry run (pass --write to apply)",
+  );
   log();
 
   if (wantClaude) {
     const path = join(claudeDir(), "settings.json");
-    const existing = readJson(path);
-    const { settings, warnings } = mergeClaudeSettings(existing, hooksDir);
+    const { settings, warnings } = mergeClaudeSettings(readJson(path), hooksDir);
     log("── Claude Code ───────────────────────────");
     log(`  file: ${path}`);
     for (const w of warnings) log(`  • ${w}`);
-    if (write) {
-      if (existsSync(path)) backupFile(path);
-      mkdirSync(dirname(path), { recursive: true });
-      writeFileSync(path, JSON.stringify(settings, null, 2) + "\n");
-      log(`  ✓ wrote hooks (backup: ${path}.bak)`);
-    } else {
-      log("  would add:");
-      log(indent(JSON.stringify({ hooks: claudeHooks(hooksDir) }, null, 2)));
-    }
+    await decideWrite("Claude Code", path, settings, { hooks: claudeHooks(hooksDir) }, forceWrite, confirm);
     log();
   }
 
   if (wantCodex) {
     const path = join(codexDir(), "hooks.json");
-    const existing = readJson(path);
-    const { file, warnings } = mergeCodexHooks(existing, hooksDir);
+    const { file, warnings } = mergeCodexHooks(readJson(path), hooksDir);
     log("── Codex ─────────────────────────────────");
     log(`  file: ${path}`);
     for (const w of warnings) log(`  • ${w}`);
-    if (write) {
-      if (existsSync(path)) backupFile(path);
-      mkdirSync(dirname(path), { recursive: true });
-      writeFileSync(path, JSON.stringify(file, null, 2) + "\n");
-      log(`  ✓ wrote hooks${existsSync(`${path}.bak`) ? ` (backup: ${path}.bak)` : ""}`);
-      // Codex refuses to run a hook it hasn't been told to trust (see `--dangerously-bypass-hook-
-      // trust`), so unlike Claude the write alone isn't enough — the first interactive run asks.
-      log("  → next: start Codex once and approve the hooks when it asks (Codex gates hook trust).");
-    } else {
-      log("  would add:");
-      log(indent(JSON.stringify({ hooks: codexHooks(hooksDir) }, null, 2)));
-    }
+    const wrote = await decideWrite("Codex", path, file, { hooks: codexHooks(hooksDir) }, forceWrite, confirm);
+    // Codex refuses to run a hook it hasn't been told to trust (see `--dangerously-bypass-hook-
+    // trust`), so unlike Claude the write alone isn't enough — the first interactive run asks.
+    if (wrote) log("  → next: start Codex once and approve the hooks when it asks (Codex gates hook trust).");
     log();
   }
 

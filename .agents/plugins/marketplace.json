@@ -1,0 +1,16 @@
+{
+  "name": "anteroom",
+  "interface": {
+    "displayName": "Anteroom"
+  },
+  "plugins": [
+    {
+      "name": "anteroom",
+      "source": {
+        "source": "local",
+        "path": "./anteroom"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

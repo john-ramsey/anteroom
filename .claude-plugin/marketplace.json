@@ -1,0 +1,16 @@
+{
+  "name": "anteroom",
+  "owner": {
+    "name": "Anteroom"
+  },
+  "metadata": {
+    "description": "Anteroom — turn-based games to play while a long Claude task runs.",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "anteroom",
+      "source": "./anteroom"
+    }
+  ]
+}

@@ -1,0 +1,26 @@
+{
+  "name": "anteroom",
+  "version": "0.4.2",
+  "description": "Play Anteroom while a long Claude task runs. A running-task HUD and a 'finished' nudge show inside the game (launch 'anteroom'). The hooks record only timestamps, never your prompts or transcripts.",
+  "author": {
+    "name": "Anteroom"
+  },
+  "homepage": "https://anteroom.johnramsey.com",
+  "keywords": [
+    "game",
+    "wait",
+    "blackjack"
+  ],
+  "hooks": "./hooks/codex.json",
+  "interface": {
+    "displayName": "Anteroom",
+    "shortDescription": "Play a quick game while a long turn runs",
+    "longDescription": "Two (or more) people play a quick game for play-money chips while a long turn runs. A running-task HUD and a 'finished' nudge appear inside the game, so you never switch back just to check whether it's done. The hooks record only timestamps, never your prompts or transcripts.",
+    "developerName": "Anteroom",
+    "category": "Productivity",
+    "brandColor": "#4c9eeb",
+    "logo": "./assets/anteroom.svg",
+    "logoDark": "./assets/anteroom-dark.svg",
+    "composerIcon": "./assets/anteroom.svg"
+  }
+}

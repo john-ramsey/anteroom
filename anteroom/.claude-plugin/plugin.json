@@ -1,0 +1,15 @@
+{
+  "name": "anteroom",
+  "displayName": "Anteroom",
+  "version": "0.4.2",
+  "description": "Play Anteroom while a long Claude task runs. A running-task HUD and a 'finished' nudge show inside the game (launch 'anteroom'). The hooks record only timestamps, never your prompts or transcripts.",
+  "author": {
+    "name": "Anteroom"
+  },
+  "homepage": "https://anteroom.johnramsey.com",
+  "keywords": [
+    "game",
+    "wait",
+    "blackjack"
+  ]
+}
