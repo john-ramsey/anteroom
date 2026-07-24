@@ -20,9 +20,11 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
+        # NO registry-url: it writes an .npmrc _authToken line that shadows OIDC — npm then
+        # skips the trusted-publishing exchange, tries the empty token, and (with 2FA on the
+        # account) hangs waiting for an OTP. npm defaults to the public registry anyway.
         with:
           node-version: 24 # >= 22.14.0, required by trusted publishing
-          registry-url: https://registry.npmjs.org
       - run: npm install -g npm@latest # trusted publishing needs npm >= 11.5.1
       - run: npm install
       - run: npm run build
