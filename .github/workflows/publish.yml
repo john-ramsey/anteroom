@@ -1,0 +1,31 @@
+# Publish `anteroom` to npm WITH provenance. Provenance ties the published tarball to
+# THIS public repo's exact commit + this workflow run (visible on npmjs.com), so anyone can verify
+# the code that runs on their machine. Requires `id-token: write` (OIDC) + npm CLI >= 9.5.
+#
+# Setup once: add an npm automation token as the `NPM_TOKEN` repo secret, and (once the OAuth app
+# exists) the public device-flow client id as the `ANTEROOM_GITHUB_CLIENT_ID` repo variable.
+name: publish
+on:
+  release:
+    types: [published]
+  workflow_dispatch: {}
+permissions:
+  contents: read
+  id-token: write # required for npm provenance
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - run: npm install
+      - run: npm run build
+        env:
+          # Public-by-design values (no secrets): baked into the bundle at build time.
+          ANTEROOM_GITHUB_CLIENT_ID: ${{ vars.ANTEROOM_GITHUB_CLIENT_ID }}
+      - run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

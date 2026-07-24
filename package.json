@@ -1,0 +1,45 @@
+{
+  "name": "anteroom",
+  "version": "1.0.0",
+  "description": "Anteroom CLI — play quick turn-based games (RPS, Four in a Row, Reversi, Blackjack, Craps, Roulette, Slots) for play-money chips while a long task runs.",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "anteroom": "./dist/anteroom.mjs"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "homepage": "https://anteroom.johnramsey.com",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/john-ramsey/anteroom.git"
+  },
+  "bugs": {
+    "url": "https://github.com/john-ramsey/anteroom/issues"
+  },
+  "keywords": [
+    "cli",
+    "game",
+    "terminal",
+    "tui",
+    "claude-code",
+    "anteroom"
+  ],
+  "scripts": {
+    "build": "node build.mjs",
+    "prepublishOnly": "npm run build",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.1",
+    "typescript": "^5.9.2",
+    "@types/node": "^22.10.0"
+  }
+}
