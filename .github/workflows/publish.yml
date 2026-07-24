@@ -1,9 +1,11 @@
-# Publish `anteroom` to npm WITH provenance. Provenance ties the published tarball to
-# THIS public repo's exact commit + this workflow run (visible on npmjs.com), so anyone can verify
-# the code that runs on their machine. Requires `id-token: write` (OIDC) + npm CLI >= 9.5.
+# Publish `anteroom` to npm via TRUSTED PUBLISHING (OIDC) — no token, no secret.
+# npm authenticates this workflow through GitHub's OIDC id-token and ties the published tarball to
+# THIS repo's exact commit + run (provenance is automatic), so anyone can verify the code that runs
+# on their machine. Requires `id-token: write` + npm CLI >= 11.5.1 + Node >= 22.14.0.
 #
-# Setup once: add an npm automation token as the `NPM_TOKEN` repo secret, and (once the OAuth app
-# exists) the public device-flow client id as the `ANTEROOM_GITHUB_CLIENT_ID` repo variable.
+# One-time setup on npmjs.com/package/anteroom/access: add a GitHub Actions trusted publisher
+# (repository john-ramsey/anteroom, workflow file publish.yml). OIDC can't do a package's FIRST
+# publish, so the name is created once with a 0.0.0 placeholder; every real release publishes here.
 name: publish
 on:
   release:
@@ -11,21 +13,20 @@ on:
   workflow_dispatch: {}
 permissions:
   contents: read
-  id-token: write # required for npm provenance
+  id-token: write # required for npm trusted publishing (OIDC) + provenance
 jobs:
   publish:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
-          node-version: 22
+          node-version: 24 # >= 22.14.0, required by trusted publishing
           registry-url: https://registry.npmjs.org
+      - run: npm install -g npm@latest # trusted publishing needs npm >= 11.5.1
       - run: npm install
       - run: npm run build
         env:
-          # Public-by-design values (no secrets): baked into the bundle at build time.
+          # Public-by-design value (no secret): baked into the bundle at build time.
           ANTEROOM_GITHUB_CLIENT_ID: ${{ vars.ANTEROOM_GITHUB_CLIENT_ID }}
-      - run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - run: npm publish --access public # OIDC auth via id-token; provenance is automatic
