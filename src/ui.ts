@@ -92,6 +92,23 @@ export const pos = (s: string): string => PAL.win(s); // win / blackjack
 export const neg = (s: string): string => PAL.lose(s); // loss / bust / red suits
 export const warn = (s: string): string => PAL.warn(s); // push / countdown warning
 
+// --- untrusted text ---------------------------------------------------------
+
+/**
+ * Strip terminal-control bytes from untrusted REMOTE text — player display names, server
+ * messages / room codes, leaderboard entries — before it reaches ANY width math, truncation,
+ * colouring, toast, or the TTY. These are single-line display fields, so they should carry no
+ * control bytes at all: removing the whole C0 range (incl. ESC 0x1b and BEL 0x07), DEL, and the C1
+ * range (0x80–0x9f) kills every escape form a hostile value could smuggle in — CSI / OSC / DCS / ST
+ * cursor moves, screen clears, OSC-8 hyperlinks, OSC-52 clipboard writes, and prompt spoofing. Our
+ * OWN colours are layered on AFTER this (accent()/bold() wrap the already-clean text), so they're
+ * untouched. PURE.
+ */
+export function sanitizeText(s: string): string {
+  // eslint-disable-next-line no-control-regex
+  return s.replace(/[\u0000-\u001f\u007f-\u009f]/g, "");
+}
+
 /** U+FE0F VARIATION SELECTOR-16 — forces emoji (wide) presentation of the preceding base char. */
 const VS16 = 0xfe0f;
 /** Cap on a single grapheme's zero-width marks, so a clamp can't emit an unbounded code-point run. */
@@ -283,7 +300,9 @@ export function renderToast(message: string, kind: "info" | "win" | "warn" = "in
   const tint = kind === "win" ? pos : kind === "warn" ? warn : accent;
   const icon = kind === "win" ? "✓" : kind === "warn" ? "!" : "●";
   const max = 44;
-  const raw = `${icon} ${message}`;
+  // `message` is often untrusted (an opponent name, a server error) — strip terminal-control bytes
+  // before it's boxed and painted, so it can't smuggle escape sequences to the TTY (see sanitizeText).
+  const raw = `${icon} ${sanitizeText(message)}`;
   const text = visibleLen(raw) > max ? raw.slice(0, max - 1) + "…" : raw;
   const inner = visibleLen(text);
   return [
@@ -587,7 +606,8 @@ export function renderLeaderboard(
     const isSelf = selfId !== undefined && e.userId === selfId;
     const marker = isSelf ? accent(bold("▸")) : " ";
     const rank = padEndVisible(rankBadge(e.rank), 3);
-    const raw = e.name.slice(0, 16);
+    // The name is the server-provided display username (untrusted) — strip control bytes first.
+    const raw = sanitizeText(e.name).slice(0, 16);
     const name = isSelf ? `${accent(bold(raw))} ${dim("(you)")}` : raw;
     const who = padEndVisible(name, 22);
     const chips = padStartVisible(bold(fmtChips(e.balance)), 9);
@@ -624,7 +644,7 @@ function responsiveLeaderboard(
     const isSelf = selfId !== undefined && e.userId === selfId;
     const marker = isSelf ? accent(bold("▸")) : " ";
     const rank = padEndVisible(rankBadge(e.rank), 3);
-    const raw = truncVisible(e.name, Math.max(1, isSelf ? nameW - 6 : nameW));
+    const raw = truncVisible(sanitizeText(e.name), Math.max(1, isSelf ? nameW - 6 : nameW));
     const name = isSelf ? `${accent(bold(raw))} ${dim("(you)")}` : raw;
     const who = padEndVisible(name, nameW);
     const chips = padStartVisible(bold(chip(e.balance)), CHIPS_W);

@@ -9,7 +9,7 @@
  */
 import type { Key, Terminal } from "../terminal.ts";
 import { fetchLeaderboard } from "../net.ts";
-import { accent, bold, center, dim, padEndVisible, renderLeaderboard, truncVisible, visibleLen, type LeaderboardSort } from "../ui.ts";
+import { accent, bold, center, dim, padEndVisible, renderLeaderboard, sanitizeText, truncVisible, visibleLen, type LeaderboardSort } from "../ui.ts";
 import { screen, sizeCanvas, type Geom } from "./canvas.ts";
 import { getGameUI, listGameUIs } from "./games/registry.ts";
 import type { GameCtx, GameUI } from "./games/types.ts";
@@ -665,7 +665,8 @@ export async function runLeaderboard(term: Terminal, server: string, selfId?: st
 export function accountLines(info: { signedIn: boolean; name: string; login?: string }): string[] {
   return info.signedIn
     ? [
-        `welcome back, ${accent(info.name)}${info.login ? dim(` (@${info.login})`) : ""}`,
+        // The GitHub display name/login are untrusted free text — strip control bytes before display.
+        `welcome back, ${accent(sanitizeText(info.name))}${info.login ? dim(` (@${sanitizeText(info.login)})`) : ""}`,
         "",
         dim('set a display name with --username "<name>"'),
       ]

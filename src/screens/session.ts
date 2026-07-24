@@ -19,7 +19,7 @@
  */
 import { encode, decode, MAX_ANTE, type RoomStatus, type ServerMessage } from "@anteroom/protocol";
 import type { Key, Terminal } from "../terminal.ts";
-import { accent, bold, countryTag, dim, neg, pos, tallyFrames, warn } from "../ui.ts";
+import { accent, bold, countryTag, dim, neg, pos, sanitizeText, tallyFrames, warn } from "../ui.ts";
 import { screen, sizeCanvas } from "./canvas.ts";
 import { pickWelcome } from "./dealer.ts";
 import { getGameUI } from "./games/registry.ts";
@@ -179,7 +179,10 @@ export function playSession(
     const displayId = (id: string): string => (id.startsWith("gh:") ? `@${id.slice(3)}` : id);
     const nameFor = (id: string): string => {
       const p = profiles.get(id);
-      const n = p?.name ?? displayId(id);
+      // The display name (and a tokenless dev id) is untrusted remote text — strip control bytes
+      // before it's coloured and painted onto the board (see sanitizeText). This is the single
+      // choke every game renders seat/roster names through (via ctx.nameFor).
+      const n = sanitizeText(p?.name ?? displayId(id));
       const base = `${n}${countryTag(p?.country)}`;
       return p?.disconnected ? `${base} ${dim("(away)")}` : base;
     };
@@ -253,8 +256,9 @@ export function playSession(
       // Between rounds on a staked table: a "place your bet" panel — adjust + lock in.
       if (awaitingBet) return betPromptLines(betBuf, balance);
       if (view) return ui.render(view, ctx());
-      // Pre-game: a lobby / waiting panel.
-      const lines = [dim(`room ${bold(opts.room)}`)];
+      // Pre-game: a lobby / waiting panel. The room code can be shared/attacker-chosen, so strip
+      // control bytes before echoing it.
+      const lines = [dim(`room ${bold(sanitizeText(opts.room))}`)];
       if (staked) {
         lines.push(
           dim(
@@ -422,6 +426,9 @@ export function playSession(
           ui = getGameUI(gameId);
           uiState = ui.initUi ? ui.initUi() : {};
           continuous = msg.continuous;
+          // The room code is echoed into the lobby status lines below; it can be shared or
+          // attacker-chosen, so strip control bytes before it reaches the canvas.
+          const room = sanitizeText(msg.room);
           // Joining an existing room can change the game (opts.game was only what we asked for).
           if (ui.menu.stake === "bankroll") staked = true;
           // Greet on your FIRST arrival at a populated casino table (a continuous table with
@@ -446,7 +453,7 @@ export function playSession(
           spectating = false;
           queuePos = null;
           if (promoted) term.toast("you're in — seated at the table", { kind: "win" });
-          profiles.set(myId, { name: msg.you.name, country: msg.you.country });
+          profiles.set(myId, { name: sanitizeText(msg.you.name), country: msg.you.country });
           // You took a seat BEHIND someone already at the table ⇒ you JOINED an open table (vs
           // created it). A joiner just confirms "joined table {code}"; the host (alone in seat 0)
           // is the one who shares the code / waits for others.
@@ -454,29 +461,32 @@ export function playSession(
           // Friendly continuous/settle tables are host-dealt; a staked one starts via the ante.
           if (ui.completion !== "summary" && !staked) {
             ws.send(encode({ type: "ready" }));
-            if (joinedOpenTable) statusLine = dim(`joined table ${bold(msg.room)}`);
+            if (joinedOpenTable) statusLine = dim(`joined table ${bold(room)}`);
           }
           // A one-shot wager table still in the lobby: the host (a matchmaker-filled table is
           // pre-seeded server-side, so it would already be "playing") shares the code to recruit
           // an opponent; a joiner of an already-open table just confirms the join.
           else if (msg.status === "lobby" && ui.completion === "summary") {
             statusLine = joinedOpenTable
-              ? dim(`joined table ${bold(msg.room)}`)
-              : dim(`waiting for an opponent — share code ${bold(msg.room)}`);
+              ? dim(`joined table ${bold(room)}`)
+              : dim(`waiting for an opponent — share code ${bold(room)}`);
           }
           // A staked table you joined (vs created): confirm it — the ante flow takes the status next.
           else if (joinedOpenTable) {
-            statusLine = dim(`joined table ${bold(msg.room)}`);
+            statusLine = dim(`joined table ${bold(room)}`);
           }
           render();
           break;
         }
         case "opponent": {
+          // The name is untrusted remote text — sanitize once here so both the stored profile and
+          // the toast interpolations below (which bypass nameFor) carry no terminal-control bytes.
+          const name = sanitizeText(msg.name);
           // `disconnected` toggles a transient away-flag; joined/reconnected/left clear it.
           if (msg.id) {
             const prev = profiles.get(msg.id);
             profiles.set(msg.id, {
-              name: msg.name,
+              name,
               country: msg.country ?? prev?.country,
               disconnected: msg.event === "disconnected",
             });
@@ -488,10 +498,10 @@ export function playSession(
             render();
             break;
           }
-          if (msg.event === "joined") term.toast(`${msg.name} joined`, { kind: "info" });
-          else if (msg.event === "reconnected") term.toast(`${msg.name} reconnected`, { kind: "info" });
-          else if (msg.event === "left") term.toast(`${msg.name} left the table`, { kind: "warn" });
-          else if (msg.event === "disconnected") term.toast(`${msg.name} disconnected…`, { kind: "warn" });
+          if (msg.event === "joined") term.toast(`${name} joined`, { kind: "info" });
+          else if (msg.event === "reconnected") term.toast(`${name} reconnected`, { kind: "info" });
+          else if (msg.event === "left") term.toast(`${name} left the table`, { kind: "warn" });
+          else if (msg.event === "disconnected") term.toast(`${name} disconnected…`, { kind: "warn" });
           render();
           break;
         }
@@ -589,7 +599,7 @@ export function playSession(
         case "lobby": {
           if ((msg.ante ?? 0) > 0) staked = true;
           const stake = msg.ante ?? 0;
-          for (const p of msg.players) profiles.set(p.id, { name: p.name, country: p.country });
+          for (const p of msg.players) profiles.set(p.id, { name: sanitizeText(p.name), country: p.country });
           // The lobby carries the wallet truth — keep the local figure in sync (a bankroll
           // slice is computed from it; the re-ante window shows it).
           const lobbyBal = msg.balances?.[myId];
@@ -697,8 +707,11 @@ export function playSession(
           break;
         }
         case "error": {
-          statusLine = neg(`! ${msg.message}`);
-          term.toast(msg.message, { kind: "warn" });
+          // Server-supplied error text is untrusted — strip control bytes before it lands in the
+          // status line (the toast path sanitizes independently, in renderToast).
+          const message = sanitizeText(msg.message);
+          statusLine = neg(`! ${message}`);
+          term.toast(message, { kind: "warn" });
           render();
           break;
         }

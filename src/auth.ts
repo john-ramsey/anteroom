@@ -18,6 +18,7 @@ import { spawn } from "node:child_process";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
+import { sanitizeText } from "./ui.ts";
 
 const GITHUB = "https://github.com";
 const GITHUB_API = "https://api.github.com";
@@ -158,11 +159,14 @@ export async function deviceFlowLogin(
     const tok = (await tokRes.json()) as TokenResponse;
     if (tok.access_token) {
       const who = await fetchGitHubUser(tok.access_token);
+      // `login`/`name` are free-text fields from the GitHub /user response — normalize them at
+      // ingestion (strip terminal-control bytes) so nothing downstream (this print, the on-disk
+      // cache, the account screen, the name sent to the server) can ever paint an escape sequence.
       const id: CachedIdentity = {
         token: tok.access_token,
         id: who.id,
-        login: who.login,
-        name: who.name?.trim() || who.login,
+        login: sanitizeText(who.login),
+        name: sanitizeText(who.name?.trim() || who.login),
       };
       await saveIdentity(id, savePath);
       console.log(`  welcome, ${id.name} (@${id.login})\n`);

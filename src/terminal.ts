@@ -12,7 +12,7 @@
  * the user's terminal is never left in alt-screen / hidden-cursor / raw mode.
  */
 import { createInterface, emitKeypressEvents, type Interface } from "node:readline";
-import { renderToast } from "./ui.ts";
+import { renderToast, sanitizeText } from "./ui.ts";
 
 export type ToastKind = "info" | "win" | "warn";
 export interface ToastOpts {
@@ -256,7 +256,9 @@ export function createTerminal(): Terminal {
     },
     toast(message: string, opts: ToastOpts = {}): void {
       if (!tty) {
-        console.log(message);
+        // Off-TTY this bypasses renderToast, so strip control bytes here too (an untrusted
+        // opponent name / server message must not smuggle escapes into a piped log).
+        console.log(sanitizeText(message));
         return;
       }
       const id = ++toastSeq;

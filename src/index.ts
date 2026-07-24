@@ -41,7 +41,7 @@ declare const __ANTEROOM_CLIENT_ID__: string;
 const BAKED_SERVER = typeof __ANTEROOM_SERVER__ !== "undefined" ? __ANTEROOM_SERVER__ : undefined;
 const BAKED_CLIENT_ID =
   typeof __ANTEROOM_CLIENT_ID__ !== "undefined" ? __ANTEROOM_CLIENT_ID__ : undefined;
-import { applyTheme, box, dim, neg, renderLeaderboard, searchingLines, setCountryMode, setLayout, type Lifetime } from "./ui.ts";
+import { applyTheme, box, dim, neg, renderLeaderboard, sanitizeText, searchingLines, setCountryMode, setLayout, type Lifetime } from "./ui.ts";
 import { screen } from "./screens/canvas.ts";
 import { getGameUI } from "./screens/games/registry.ts";
 import { deriveTaskState, hudLine, isAgentAlive, type TaskMarkers } from "./screens/taskHud.ts";
@@ -222,16 +222,18 @@ async function resolveIdentity(args: Args): Promise<ResolvedIdentity> {
       await saveIdentity({ ...cached, username });
     }
     const shown = username ? `${username} (@${cached.login})` : `@${cached.login}`;
-    console.log(dim(`signed in as ${shown}. set a display name with --username "<name>".`));
+    // `username` comes from a CLI flag / the cache — strip control bytes before echoing it.
+    console.log(dim(`signed in as ${sanitizeText(shown)}. set a display name with --username "<name>".`));
     return { token: cached.token, name: username ?? "", login: cached.login, display: username ?? cached.name };
   }
   console.log(dim("playing as a guest. run with --login to sign in with GitHub."));
   return { name: args.name, display: args.name !== "anon" ? args.name : undefined };
 }
 
-/** Show a player id the friendly way: `@login` for a verified gh: id, else as-is. */
+/** Show a player id the friendly way: `@login` for a verified gh: id, else as-is. A tokenless dev
+ *  id is the raw display name (untrusted), so strip control bytes before it feeds the summary. */
 function displayName(userId: string): string {
-  return userId.startsWith("gh:") ? `@${userId.slice(3)}` : userId;
+  return sanitizeText(userId.startsWith("gh:") ? `@${userId.slice(3)}` : userId);
 }
 
 /**
