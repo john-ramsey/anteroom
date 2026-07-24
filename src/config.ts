@@ -1,8 +1,9 @@
 /**
  * Default endpoint resolution for the client.
  *
- * Precedence (the explicit `--server` / `--client-id` flags override these in parseArgs):
- *   runtime env var  >  build-baked value  >  dev fallback
+ * Precedence:  runtime env var  >  build-baked value  >  dev fallback
+ * (`--client-id` still overrides in parseArgs; there is no `--server` flag — ANTEROOM_SERVER
+ * is the only way to aim the client elsewhere.)
  *
  * The build-baked value is injected by esbuild `--define` when producing the published
  * `anteroom` bin (see build.mjs), so `npx anteroom` points at prod out of the box while

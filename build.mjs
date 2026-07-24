@@ -2,8 +2,8 @@
 //
 // Bakes the production defaults into the bundle via esbuild `--define` so `npx anteroom`
 // works with no flags, while `tsx src/index.ts` (this define never runs) stays on
-// localhost. Override at build time with env vars; override at runtime with ANTEROOM_*
-// env vars or the --server / --client-id flags.
+// localhost. Override at build time with env vars; override at runtime with the ANTEROOM_*
+// env vars (or --client-id).
 //
 //   npm run build -w anteroom
 //   ANTEROOM_SERVER=wss://staging.example.com npm run build -w anteroom

@@ -13,9 +13,11 @@
  *   tsx src/index.ts --room <code>                   # join an existing room
  *   tsx src/index.ts --login                         # sign in with GitHub, then menu
  *   tsx src/index.ts --leaderboard                   # print the leaderboard and exit
- * Options: --game rps|four|reversi|blackjack|craps|roulette|slots  --best-of N  --ante N
- *          --server ws://host:port  --find  --new  --room CODE  --login  --logout  --username <name>
- *          --dev-identity <name>  --client-id <id>  --token <gh-token>  --leaderboard
+ *   tsx src/index.ts --help                          # the flag list players see
+ *
+ * Player-facing flags live in `args.ts` (`helpText`). Dev-only extras, deliberately not in
+ * `--help`: --name <n>, --dev-identity <n>, --client-id <id>, --token <gh-token>, --watch-claude.
+ * Point at a non-default server with the ANTEROOM_SERVER env var (there is no --server flag).
  */
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -31,11 +33,11 @@ import { runSettings } from "./screens/settings.ts";
 import { loadSettings, saveSettings, pushRecent } from "./settings.ts";
 import { runSetup } from "./setup.ts";
 import { agentWatchDirs, resolveClientId, resolveServer, type AgentWatch } from "./config.ts";
-import { MAX_ANTE } from "@anteroom/protocol";
+import { helpText, parseArgs as parseArgsPure, wantsHelp, type Args } from "./args.ts";
 
 // Build-baked prod defaults, injected by esbuild `--define` in build.mjs. Undefined under
 // tsx/dev (the `typeof` guard avoids a ReferenceError on the undeclared global), so local
-// runs fall back to localhost. Runtime env vars and the --server/--client-id flags still win.
+// runs fall back to localhost. The ANTEROOM_SERVER env var and --client-id still win.
 declare const __ANTEROOM_SERVER__: string;
 declare const __ANTEROOM_CLIENT_ID__: string;
 const BAKED_SERVER = typeof __ANTEROOM_SERVER__ !== "undefined" ? __ANTEROOM_SERVER__ : undefined;
@@ -43,64 +45,16 @@ const BAKED_CLIENT_ID =
   typeof __ANTEROOM_CLIENT_ID__ !== "undefined" ? __ANTEROOM_CLIENT_ID__ : undefined;
 import { applyTheme, box, dim, neg, renderLeaderboard, sanitizeText, searchingLines, setCountryMode, setLayout, type Lifetime } from "./ui.ts";
 import { screen } from "./screens/canvas.ts";
-import { getGameUI } from "./screens/games/registry.ts";
+import { getGameUI, listGameUIs } from "./screens/games/registry.ts";
 import { deriveTaskState, hudLine, isAgentAlive, type TaskMarkers } from "./screens/taskHud.ts";
 
-interface Args {
-  server: string;
-  room?: string;
-  name: string;
-  game: string;
-  bestOf: number;
-  ante: number;
-  isNew: boolean;
-  find: boolean;
-  token?: string;
-  username?: string;
-  leaderboard: boolean;
-  login: boolean;
-  logout: boolean;
-  devIdentity?: string;
-  clientId?: string;
-  /** Override the auto-discovered agent marker dirs with one explicit dir (dev). Normally unset —
-   *  a bare `anteroom` watches `~/.config/anteroom/agents/*` (see agentWatchDirs). */
-  watchClaude?: string;
-}
-
+/** Parse with the env + build-baked defaults resolved. The parser itself lives in `args.ts`
+ *  (pure, unit-tested) — importing this file launches the client, so it can't be tested here. */
 function parseArgs(argv: string[]): Args {
-  const a: Args = {
+  return parseArgsPure(argv, {
     server: resolveServer(process.env, BAKED_SERVER),
-    name: "anon",
-    game: "rps",
-    bestOf: 3,
-    ante: 0,
-    isNew: false,
-    find: false,
-    login: false,
-    logout: false,
-    leaderboard: false,
     clientId: resolveClientId(process.env, BAKED_CLIENT_ID),
-  };
-  for (let i = 0; i < argv.length; i++) {
-    const v = argv[i];
-    if (v === "--server") a.server = argv[++i] ?? a.server;
-    else if (v === "--room") a.room = argv[++i];
-    else if (v === "--name") a.name = argv[++i] ?? a.name;
-    else if (v === "--game") a.game = (argv[++i] ?? a.game).toLowerCase();
-    else if (v === "--best-of") a.bestOf = Number(argv[++i]);
-    else if (v === "--ante") a.ante = Math.min(MAX_ANTE, Math.max(0, Math.trunc(Number(argv[++i]))));
-    else if (v === "--token") a.token = argv[++i];
-    else if (v === "--username") a.username = argv[++i];
-    else if (v === "--login") a.login = true;
-    else if (v === "--logout") a.logout = true;
-    else if (v === "--dev-identity") a.devIdentity = argv[++i];
-    else if (v === "--client-id") a.clientId = argv[++i];
-    else if (v === "--leaderboard") a.leaderboard = true;
-    else if (v === "--new") a.isNew = true;
-    else if (v === "--find") a.find = true;
-    else if (v === "--watch-claude") a.watchClaude = argv[++i];
-  }
-  return a;
+  });
 }
 
 /** Parse a numbers-only JSON marker the plugin wrote into the watch dir, tolerating absence. */
@@ -344,7 +298,10 @@ async function startPlay(
       );
     } catch (e) {
       if (e instanceof MatchmakeCancelled) return { reason: "cancelled" };
-      throw e;
+      // A refused or dropped queue is a normal outcome, not a crash: hand it back as an `error`
+      // result so the shell shows it and returns to the menu. Letting it throw would unwind out
+      // of the TUI and print a stack trace — which is what a signed-out player used to get.
+      return { reason: "error", message: e instanceof Error ? e.message : String(e) };
     }
     room = m.room;
     ante = m.ante; // join with the matchmaker-pinned ante (not whatever we queued for)
@@ -533,7 +490,11 @@ async function main(): Promise<void> {
 }
 
 // `anteroom setup` wires the hooks into Claude/Codex; everything else launches the game client.
-if (process.argv[2] === "setup") {
+if (wantsHelp(process.argv.slice(2)) && process.argv[2] !== "setup") {
+  // Printed before anything touches the identity cache or the network, so `--help` is instant
+  // and works signed out. The game list comes from the registry, so it can't drift.
+  console.log(helpText(listGameUIs().map((g) => g.id)));
+} else if (process.argv[2] === "setup") {
   // setup can await user input (the interactive apply prompt), so surface any failure with an exit
   // code instead of an unhandled rejection. No process.exit(): let buffered output flush first.
   runSetup(process.argv.slice(3)).catch((err) => {

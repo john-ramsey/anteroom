@@ -10,6 +10,7 @@ import {
   type LeaderboardResponse,
   type ServerMessage,
 } from "@anteroom/protocol";
+import { sanitizeText } from "./ui.ts";
 
 /** ws://host → http://host (and wss → https). */
 export function httpBase(wsUrl: string): string {
@@ -64,6 +65,22 @@ export function matchmake(
       reject(new MatchmakeCancelled());
     };
     signal?.addEventListener("abort", onAbort, { once: true });
+    // Every exit runs through here exactly once. The queue can end four ways — matched, refused,
+    // closed, socket error — and before this guard existed only the first two were wired up, so a
+    // refusal (the server's `error` frame + a 1008 close) left the promise pending forever and the
+    // player sat on "searching for a table" with nothing to read.
+    let settled = false;
+    const settle = (): boolean => {
+      if (settled) return false;
+      settled = true;
+      signal?.removeEventListener("abort", onAbort);
+      try {
+        ws.close();
+      } catch {
+        /* already closing */
+      }
+      return true;
+    };
     // Authenticate the queue slot like `join`; dev/self-host falls back to a guest name.
     ws.addEventListener("open", () =>
       ws.send(encode({ type: "find_match", game, ante, token: identity.token, name: identity.name })),
@@ -73,19 +90,22 @@ export function matchmake(
       if (msg.type === "searching") {
         onSearching?.({ minMs: msg.minMs, maxMs: msg.maxMs });
       } else if (msg.type === "matched") {
-        signal?.removeEventListener("abort", onAbort);
-        try {
-          ws.close();
-        } catch {
-          /* already closing */
-        }
         // Join with the matchmaker-pinned ante so the table matches what we queued for.
-        resolve({ room: msg.room, ante: msg.ante });
+        if (settle()) resolve({ room: msg.room, ante: msg.ante });
+      } else if (msg.type === "error") {
+        // The refusal is worth showing verbatim — "sign in with GitHub to play" is the whole
+        // answer for a signed-out player. Strip control bytes first: this string is server-supplied
+        // and lands in a terminal.
+        if (settle()) reject(new Error(`matchmaking refused: ${sanitizeText(msg.message)}`));
       }
     });
+    ws.addEventListener("close", () => {
+      // A refused queue closes cleanly (1008), which fires no `error` event — without this the
+      // promise would never settle.
+      if (settle()) reject(new Error("matchmaking closed before a match was found"));
+    });
     ws.addEventListener("error", (e: Event) => {
-      signal?.removeEventListener("abort", onAbort);
-      reject(new Error("matchmaking failed: " + ((e as ErrorEvent).message ?? "")));
+      if (settle()) reject(new Error("matchmaking failed: " + ((e as ErrorEvent).message ?? "")));
     });
   });
 }
