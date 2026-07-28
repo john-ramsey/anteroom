@@ -159,6 +159,10 @@ export function createTerminal(): Terminal {
 
   const keyHandlers = new Set<(k: Key) => void>();
   const resizeHandlers = new Set<() => void>();
+  // Set once by `restore()`. Every write path checks it: teardown is not necessarily the last thing
+  // that happens. The startup update check is fire-and-forget and its in-flight request keeps the
+  // process alive, so quitting quickly used to land its toast — cursor moves, clears and all —
+  // in the user's normal shell after the alt-screen was gone.
   let restored = false;
   let suspended = false;
   let rl: Interface | undefined;
@@ -208,7 +212,10 @@ export function createTerminal(): Terminal {
 
   /** Overwrite the screen with the stored base frame, then draw active toasts + status on top. */
   function render(): void {
-    if (!tty) return;
+    // Backstop for the `restored` checks on paint/toast/setStatus: once we have left the
+    // alt-screen the cursor belongs to the user's shell, and every byte below is absolute
+    // positioning + clear sequences that would scribble over whatever is there now.
+    if (restored || !tty) return;
     const lines = lastFrame.split("\n");
     // Join with "\n" (clear-to-EOL on each line so shorter lines don't ghost) but DON'T append a
     // trailing newline after the last line — a newline on the bottom-most terminal row scrolls the
@@ -246,6 +253,7 @@ export function createTerminal(): Terminal {
       return out.rows ?? 24;
     },
     paint(frame: string): void {
+      if (restored) return; // see `restored` — the terminal is the shell's again
       if (!tty) {
         console.log(frame);
         return;
@@ -255,6 +263,7 @@ export function createTerminal(): Terminal {
       render();
     },
     toast(message: string, opts: ToastOpts = {}): void {
+      if (restored) return;
       if (!tty) {
         // Off-TTY this bypasses renderToast, so strip control bytes here too (an untrusted
         // opponent name / server message must not smuggle escapes into a piped log).
@@ -274,7 +283,7 @@ export function createTerminal(): Terminal {
       render();
     },
     setStatus(lines: string[] | null): void {
-      if (!tty) return;
+      if (restored || !tty) return;
       status = lines && lines.length > 0 ? lines : null;
       render();
     },

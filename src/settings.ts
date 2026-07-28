@@ -63,6 +63,15 @@ export interface Settings {
   /** How to show players' country next to their names (flag / code / off / auto). */
   country: CountryMode;
   /**
+   * Ask the npm registry at startup whether a newer `anteroom` is published (default on).
+   *
+   * This is the ONLY outbound request the client makes that isn't the game server, so it gets a
+   * visible switch rather than only the `ANTEROOM_NO_UPDATE_CHECK` environment variable — that one
+   * is for scripts and CI, and a player who would rather the client didn't phone npm shouldn't have
+   * to edit a shell profile. Either switch off means no request is made at all. See update.ts.
+   */
+  updateCheck: boolean;
+  /**
    * User-saved colour schemes, keyed by name. These sit alongside the built-in `PRESETS`
    * in the theme picker; unlike presets they can be deleted. Names can never shadow a
    * built-in (enforced on save and on load).
@@ -190,6 +199,7 @@ export async function loadSettings(path: string = SETTINGS_PATH): Promise<Settin
       layout?: string;
       flags?: unknown;
       country?: unknown;
+      updateCheck?: unknown;
       customThemes?: unknown;
       recent?: unknown;
     };
@@ -211,6 +221,9 @@ export async function loadSettings(path: string = SETTINGS_PATH): Promise<Settin
       theme,
       layout,
       country,
+      // Only a real `false` turns it off: a hand-edited "false" (or any other junk) must not
+      // silently disable a check the user never actually opted out of.
+      updateCheck: typeof raw.updateCheck === "boolean" ? raw.updateCheck : true,
       customThemes: parseCustomThemes(raw.customThemes),
       recent: parseRecent(raw.recent),
     };
@@ -219,6 +232,7 @@ export async function loadSettings(path: string = SETTINGS_PATH): Promise<Settin
       theme: { ...DEFAULT_THEME },
       layout: DEFAULT_LAYOUT,
       country: DEFAULT_COUNTRY,
+      updateCheck: true,
       customThemes: {},
       recent: [],
     };

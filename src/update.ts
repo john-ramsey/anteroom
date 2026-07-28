@@ -10,11 +10,13 @@
  *     afternoon make one request;
  *   • a hard timeout, and every error path (offline, 500, junk body, unreadable cache, read-only
  *     home) resolves to "no news" — a version check must never be the reason a game doesn't start;
- *   • it is fire-and-forget: the caller never awaits it before showing the menu.
+ *   • it is fire-and-forget: the caller never awaits it before showing the menu;
+ *   • it can be switched off entirely — see `updateCheckEnabled` — and then makes no request.
  *
  * What crosses the wire is a plain unauthenticated GET for a public package document. No identity,
  * no telemetry, nothing about you or your machine beyond what any HTTP request carries. That is
- * worth stating plainly because the product's privacy claim is specific (see docs/disclaimer.md).
+ * worth stating plainly because the product's privacy claim is specific (see docs/disclaimer.md) —
+ * and it is why the request is BOTH documented there and opt-out-able rather than simply quiet.
  */
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -132,10 +134,45 @@ export async function fetchLatestVersion(): Promise<string | null> {
 }
 
 /**
- * The wired-up check for the app shell: resolves to the newer version, or null. Never rejects, so
- * a caller can `void`-fire it and toast whatever comes back.
+ * Is the check switched on? PURE.
+ *
+ * It is the only outbound request the client makes that isn't the game server, and it goes to a
+ * third party — npm's public registry, the same host `npm i -g anteroom` already talks to. It
+ * carries no identity and no telemetry, but it still reveals an IP and a launch time to someone
+ * outside the game's trust boundary, and the privacy policy is specific enough that an
+ * undisclosed request doesn't belong in it. So: documented, and switchable off.
+ *
+ * `ANTEROOM_NO_UPDATE_CHECK` is ours; `NO_UPDATE_NOTIFIER` is the convention other CLIs use (a
+ * player who has already turned nags off globally shouldn't have to learn our spelling); `CI`
+ * because a build agent is not a player. An empty or `0`/`false` value does NOT opt out — that is
+ * how a shell profile unsets an inherited variable.
  */
-export async function findNewerVersion(current: string): Promise<string | null> {
+export function updateCheckEnabled(env: Record<string, string | undefined> = process.env): boolean {
+  const on = (v: string | undefined): boolean =>
+    v !== undefined && v !== "" && v !== "0" && v.toLowerCase() !== "false";
+  return !(on(env["ANTEROOM_NO_UPDATE_CHECK"]) || on(env["NO_UPDATE_NOTIFIER"]) || on(env["CI"]));
+}
+
+export interface FindNewerOpts {
+  /**
+   * The player's saved preference (`Settings.updateCheck`, toggled on the Settings screen).
+   * Either this or the environment switch being off means no request: they are independent
+   * ways to say the same "don't" and neither overrides the other.
+   */
+  enabled?: boolean;
+  env?: Record<string, string | undefined>;
+  /** Test seams (the real cache + registry by default). */
+  deps?: Partial<UpdateCheckDeps>;
+}
+
+/**
+ * The wired-up check for the app shell: resolves to the newer version, or null. Never rejects, so
+ * a caller can `void`-fire it and toast whatever comes back. Returns null WITHOUT touching the
+ * network when the check is switched off — by the setting or by the environment.
+ */
+export async function findNewerVersion(current: string, opts: FindNewerOpts = {}): Promise<string | null> {
+  const { enabled = true, env = process.env, deps = {} } = opts;
+  if (!enabled || !updateCheckEnabled(env)) return null;
   try {
     return await checkForUpdate({
       current,
@@ -143,6 +180,7 @@ export async function findNewerVersion(current: string): Promise<string | null> 
       read: readUpdateCache,
       write: writeUpdateCache,
       fetchLatest: fetchLatestVersion,
+      ...deps,
     });
   } catch {
     return null;

@@ -368,8 +368,10 @@ async function main(): Promise<void> {
   // Fire-and-forget: a stale install is worth a word, but never worth delaying the menu (or
   // failing a launch) for. It answers on its own schedule — at most one registry request a day —
   // and lands as a toast whenever it comes back. See update.ts for what does and doesn't cross.
+  // `enabled` is the player's own Settings toggle; off means no request is made at all. (Toggling
+  // it off mid-session applies from the next launch — by then this has already fired or not.)
   if (BAKED_VERSION !== undefined && term.tty) {
-    void findNewerVersion(BAKED_VERSION).then((latest) => {
+    void findNewerVersion(BAKED_VERSION, { enabled: settings.updateCheck }).then((latest) => {
       if (latest) term.toast(`anteroom ${latest} is out (you have ${BAKED_VERSION}) · npm i -g anteroom`, { kind: "info", ms: 8000 });
     });
   }

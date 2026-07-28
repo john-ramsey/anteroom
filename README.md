@@ -50,4 +50,4 @@ npm run build          # -> dist/anteroom.mjs
 
 [npm provenance]: https://docs.npmjs.com/generating-provenance-statements
 
-MIT © John Ramsey. v1.0.5.
+MIT © John Ramsey. v1.0.6.

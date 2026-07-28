@@ -2,7 +2,7 @@
 
 _Short, plain-English._
 
-Last updated: 2026-06-28.
+Last updated: 2026-07-28.
 
 ## What this is
 
@@ -33,6 +33,21 @@ beyond what's needed to run your session.
 
 No payments. No advertising. No third-party tracking or analytics cookies. No selling or sharing
 of data. No collection of any personal data beyond the GitHub login/id and chosen username above.
+
+## The one request that isn't us
+
+At startup the client asks the public npm registry (`registry.npmjs.org`) what the latest published
+version is, so it can tell you when your install is out of date. It is the same place `npm install`
+already gets the package from. The request is unauthenticated and carries no identity, no username
+and no game data, and it is made at most once a day. It does mean npm sees your IP address and
+roughly when you launched, so you can turn it off. In the client: **Settings → updates → off**.
+Or from your shell, which is handy for scripts and CI:
+
+```bash
+export ANTEROOM_NO_UPDATE_CHECK=1
+```
+
+Either one means no request is made at all. (`NO_UPDATE_NOTIFIER` and `CI` do the same.)
 
 ## Data & deletion
 

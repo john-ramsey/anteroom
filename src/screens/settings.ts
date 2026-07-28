@@ -34,8 +34,8 @@ const ROLE_FN: Record<ThemeRole, (s: string) => string> = {
   lose: neg,
   warn,
 };
-type Row = "theme" | ThemeRole | "save" | "delete" | "layout" | "country" | "done";
-const ROWS: Row[] = ["theme", ...THEME_ROLES, "save", "delete", "layout", "country", "done"];
+type Row = "theme" | ThemeRole | "save" | "delete" | "layout" | "country" | "updates" | "done";
+const ROWS: Row[] = ["theme", ...THEME_ROLES, "save", "delete", "layout", "country", "updates", "done"];
 const countryHint: Record<string, string> = {
   auto: "flag where supported, else code",
   flag: "always the flag emoji",
@@ -55,6 +55,7 @@ export function runSettings(term: Terminal, settings: Settings): Promise<Setting
       theme: { ...settings.theme },
       layout: settings.layout,
       country: settings.country,
+      updateCheck: settings.updateCheck,
       customThemes: { ...settings.customThemes },
       recent: [...settings.recent], // not edited here — carried through so saving settings keeps it
     };
@@ -80,7 +81,12 @@ export function runSettings(term: Terminal, settings: Settings): Promise<Setting
       ROWS.forEach((row, i) => {
         const here = i === sel;
         const m = here ? accent(bold("▸")) : " ";
-        if (row === "save" || row === "layout") lines.push(rule());
+        // ONE separator, dividing everything-about-the-theme (picker, colours, save, delete) from
+        // the other preferences. There used to be a second rule above "save", but each row costs a
+        // line of the preview's height budget and at 80×24 (CH 21) the big-cards sample needs every
+        // one of them — adding the "updates" row with both rules pushed it past the fit ladder and
+        // the preview vanished. This boundary is the meaningful one regardless.
+        if (row === "layout") lines.push(rule());
         if (row === "theme") {
           lines.push(`${m} ${dim(pad("theme", 11))} ${accent(bold(`‹ ${headerName} ›`))}  ${dim("(enter: next)")}`);
         } else if (row === "save") {
@@ -100,6 +106,15 @@ export function runSettings(term: Terminal, settings: Settings): Promise<Setting
           lines.push(`${m} ${dim(pad("layout", 11))} ${accent(bold(layoutLabel(working.layout)))}  ${dim("(enter: toggle)")}`);
         } else if (row === "country") {
           lines.push(`${m} ${dim(pad("country", 11))} ${accent(bold(working.country))}  ${dim(`(enter: cycle) ${countryHint[working.country]}`)}`);
+        } else if (row === "updates") {
+          // The one outbound request that isn't the game server, so it gets a switch here rather
+          // than only an environment variable. The hint says WHERE it goes: "npm" is the honest
+          // answer and the same place `npm i -g anteroom` already came from.
+          const val = working.updateCheck ? "on" : "off";
+          // Short enough to survive the canvas clamp at the CW=58 floor, where a long hint gets
+          // ellipsised into uselessness (the country row's does).
+          const hint = working.updateCheck ? "checks npm at startup" : "no request to npm";
+          lines.push(`${m} ${dim(pad("updates", 11))} ${accent(bold(val))}  ${dim(`(enter: toggle) ${hint}`)}`);
         } else if (row === "done") {
           lines.push(`${m} ${bold("Save & back")}`);
         } else {
@@ -226,6 +241,8 @@ export function runSettings(term: Terminal, settings: Settings): Promise<Setting
           const idx = COUNTRY_MODES.indexOf(working.country);
           working.country = COUNTRY_MODES[(idx + 1) % COUNTRY_MODES.length]!;
           setCountryMode(working.country);
+        } else if (row === "updates") {
+          working.updateCheck = !working.updateCheck;
         } else {
           editing = true;
           buffer = "";
