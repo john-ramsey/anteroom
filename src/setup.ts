@@ -11,8 +11,8 @@
  * uses, so there is nothing left to paste.)
  *
  * Hook-script resolution (in priority order): `ANTEROOM_HOOKS_DIR` if set; else the scripts BUNDLED
- * next to the published bin (`<pkg>/hooks/scripts`, staged by the sync + shipped in `files`); else,
- * in the monorepo, the sibling plugin's `packages/plugin/scripts`.
+ * next to the published bin (`<pkg>/hooks/scripts`, shipped in `files`); else, when running from a
+ * source checkout, the sibling plugin package's `scripts` dir.
  */
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
@@ -33,7 +33,7 @@ export function resolveHooksDir(
   // <pkg>/dist there, so ".." lands on the package root).
   const bundled = resolve(baseDir, "..", "hooks", "scripts");
   if (existsSync(join(bundled, "on-prompt.mjs"))) return bundled;
-  // Dev/monorepo: the sibling plugin's scripts dir (baseDir is packages/client/src).
+  // Source checkout: the sibling plugin package's scripts dir (baseDir is the client's src).
   return resolve(baseDir, "..", "..", "plugin", "scripts");
 }
 
