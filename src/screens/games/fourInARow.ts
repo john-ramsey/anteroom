@@ -270,6 +270,6 @@ export const fourInARowUI: GameUI<FourView> = {
         : view.winner === null
           ? warn(bold("DRAW"))
           : neg(bold("YOU LOSE"));
-    return [dim("match over"), "", headline, "", dim("[space] play again · [m] menu · [q] quit")];
+    return [dim("match over"), "", headline, "", dim("[space] play again · [m] menu")];
   },
 };

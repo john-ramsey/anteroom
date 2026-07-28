@@ -34,15 +34,20 @@ import { loadSettings, saveSettings, pushRecent } from "./settings.ts";
 import { runSetup } from "./setup.ts";
 import { agentWatchDirs, resolveClientId, resolveServer, type AgentWatch } from "./config.ts";
 import { helpText, parseArgs as parseArgsPure, wantsHelp, type Args } from "./args.ts";
+import { findNewerVersion } from "./update.ts";
 
 // Build-baked prod defaults, injected by esbuild `--define` in build.mjs. Undefined under
 // tsx/dev (the `typeof` guard avoids a ReferenceError on the undeclared global), so local
 // runs fall back to localhost. The ANTEROOM_SERVER env var and --client-id still win.
 declare const __ANTEROOM_SERVER__: string;
 declare const __ANTEROOM_CLIENT_ID__: string;
+declare const __ANTEROOM_VERSION__: string;
 const BAKED_SERVER = typeof __ANTEROOM_SERVER__ !== "undefined" ? __ANTEROOM_SERVER__ : undefined;
 const BAKED_CLIENT_ID =
   typeof __ANTEROOM_CLIENT_ID__ !== "undefined" ? __ANTEROOM_CLIENT_ID__ : undefined;
+// The shipped version, baked by build.mjs. Undefined under tsx/dev — where there is no published
+// build to be behind, so the update check simply doesn't run.
+const BAKED_VERSION = typeof __ANTEROOM_VERSION__ !== "undefined" ? __ANTEROOM_VERSION__ : undefined;
 import { applyTheme, box, dim, neg, renderLeaderboard, sanitizeText, searchingLines, setCountryMode, setLayout, type Lifetime } from "./ui.ts";
 import { screen } from "./screens/canvas.ts";
 import { getGameUI, listGameUIs } from "./screens/games/registry.ts";
@@ -184,8 +189,13 @@ async function resolveIdentity(args: Args): Promise<ResolvedIdentity> {
   return { name: args.name, display: args.name !== "anon" ? args.name : undefined };
 }
 
-/** Show a player id the friendly way: `@login` for a verified gh: id, else as-is. A tokenless dev
- *  id is the raw display name (untrusted), so strip control bytes before it feeds the summary. */
+/**
+ * LAST-RESORT rendering of a player id, for an id nobody ever named. A `gh:` id's suffix is the
+ * immutable NUMERIC account id, not the login, so `@68801528` is the best this can do — which is
+ * why it's a fallback and not the normal path: the summary screen prefers the roster the session
+ * carries out on `SessionResult.names` (see summaryNames.test.ts). A tokenless dev id is the raw
+ * display name (untrusted), so strip control bytes before it feeds the summary.
+ */
 function displayName(userId: string): string {
   return sanitizeText(userId.startsWith("gh:") ? `@${userId.slice(3)}` : userId);
 }
@@ -355,6 +365,14 @@ async function main(): Promise<void> {
   const nameForSelf = (id: string): string => displayName(id);
 
   const term = createTerminal();
+  // Fire-and-forget: a stale install is worth a word, but never worth delaying the menu (or
+  // failing a launch) for. It answers on its own schedule — at most one registry request a day —
+  // and lands as a toast whenever it comes back. See update.ts for what does and doesn't cross.
+  if (BAKED_VERSION !== undefined && term.tty) {
+    void findNewerVersion(BAKED_VERSION).then((latest) => {
+      if (latest) term.toast(`anteroom ${latest} is out (you have ${BAKED_VERSION}) · npm i -g anteroom`, { kind: "info", ms: 8000 });
+    });
+  }
   const flagRequest = initialRequest(args);
   let stopClaudeWatch: () => void = () => {};
 
@@ -375,7 +393,7 @@ async function main(): Promise<void> {
         if (ui.summary) {
           const ctx = {
             room: "",
-            nameFor: nameForSelf,
+            nameFor: (id: string) => result.names?.[id] ?? nameForSelf(id),
             myId: "",
             myTurn: false,
             ui: { lifetime: await lifetimeFor(args.server, selfId) } as Record<string, unknown>,
@@ -460,11 +478,12 @@ async function main(): Promise<void> {
           term,
           result.game,
           result.view,
-          nameForSelf,
+          // The names the session learned, falling back to the id form only for someone it never
+          // saw named — otherwise a signed-in player reads their own numeric GitHub id back.
+          (id) => result.names?.[id] ?? nameForSelf(id),
           await lifetimeFor(args.server, selfId),
         );
-        if (next === "again") pending = req;
-        else if (next === "quit") break;
+        if (next === "again") pending = req; // "menu" just falls through to the menu loop
       } else if (result.reason === "inactivity") {
         screen(term, "Inactivity", [neg("you were removed for inactivity")], "any key to return");
         await term.readKey();

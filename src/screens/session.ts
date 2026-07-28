@@ -45,16 +45,20 @@ export interface SessionResult {
   /** The final view, for the summary screen (one-shot games only). Opaque. */
   view?: unknown;
   message?: string;
+  /**
+   * The display names this session learned, by player id — the roster, carried OUT of the session
+   * so the end-of-match summary can still say who everyone was. The summary screen runs after the
+   * socket is gone, and without this the shell has only ids: a signed-in player's `gh:<numericId>`
+   * then rendered as a bare `@68801528` on the reversi score line (and for opponents in the RPS
+   * recap). See test/summaryNames.test.ts.
+   */
+  names?: Record<string, string>;
 }
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 /** Minimum staked bet (mirrors the server's minimum — the server clamps too). */
 const MIN_BET = 5;
-/** Between rounds, how long the re-ante window waits for the player to adjust their bet before
- *  auto-locking the current amount, so a hands-off table keeps flowing. Comfortably
- *  inside the server's lobby-ante deadline. */
-const BET_AUTO_LOCK_MS = 5_000;
 /** Show the per-move countdown only inside its final minute. A shared table's 10s clock always
  *  shows; a solo safety-valve clock (slots' 10-minute `moveClockMs`) stays out of the footer
  *  until it actually matters — a number like "600s" reads as pressure, not information. */
@@ -87,9 +91,20 @@ export function secsUntil(deadline: number, now: number): number {
 }
 
 /**
+ * The keys that leave a table. `m` for menu, because that is what leaving does — it returns you to
+ * the main menu, never to a closed program. `q` is deliberately NOT here: it quits the app from the
+ * main menu, and one key that sometimes exits the process and sometimes doesn't is the confusion
+ * this contract exists to remove (test/keys.test.ts).
+ */
+export const LEAVE_KEYS: { chars: readonly string[]; names: readonly string[] } = {
+  chars: ["m"],
+  names: ["escape"],
+};
+
+/**
  * The footer's leave row. Between rounds (`nextRoundAt` pending, from `result.nextRoundAt` or a
  * mid-gap `state` snapshot) it becomes the between-rounds line: a live countdown to
- * the next round's boundary (a staked table opens its re-ante window there; a friendly one deals),
+ * the next round's boundary (where the table re-antes the same stake and deals again),
  * that staying seated auto-plays you into it, and how to leave — one ≤58-col line (the canvas floor,
  * see layoutOverflow.test.ts). Seconds round UP so it never reads 0s while time remains. A
  * spectator isn't seated, so their line skips the stay hint (the queue row covers their state).
@@ -98,26 +113,6 @@ export function secsUntil(deadline: number, now: number): number {
 export function leaveHint(base: string, nextRoundAt: number | null, now: number, seated: boolean): string {
   if (nextRoundAt === null) return base;
   return `next round in ${secsUntil(nextRoundAt, now)}s${seated ? " · stay to auto-play" : ""} · ${base}`;
-}
-
-/**
- * The between-rounds "place your bet" panel body: the live amount, the balance (or
- * the minimum), and the input affordances. The hints live HERE rather than in the footer — the
- * old footer row (hints + leave joined) was ~72 cols and the canvas clamped it with "…" on a
- * 58-col floor terminal, swallowing the leave hint. Every line fits the floor. PURE.
- */
-export function betPromptLines(betBuf: string, balance: number | null): string[] {
-  return [
-    dim("hand over — place your bet for the next round"),
-    "",
-    // No leading padding: the canvas centres every line, so a stray indent here pushed the
-    // bet amount off-centre (right of the "balance" line below it).
-    bold(`${betBuf || "0"} chips`),
-    "",
-    balance !== null ? dim(`balance ${balance}`) : dim(`minimum ${MIN_BET}`),
-    "",
-    accent("type a number · [+/-] ±25 · [space] lock in"),
-  ];
 }
 
 export function playSession(
@@ -151,10 +146,6 @@ export function playSession(
     let roundIdx = 0; // which round of a continuous table we're on (0 = first)
     // Between-rounds re-staking: on a continuous staked table the player can change
     // their bet in the re-ante window before it auto-locks.
-    let awaitingBet = false;
-    let nextAnte = opts.ante; // the bet to place next round (defaults to the last one)
-    let betBuf = String(opts.ante); // the live digits being typed in the re-ante window
-    let betTimer: ReturnType<typeof setTimeout> | undefined;
     let lastDeltas: Record<string, number> | undefined;
     let statusLine = "";
     let animating = false;
@@ -192,18 +183,26 @@ export function playSession(
       return { room: opts.room, nameFor, myId, myTurn, ui: uiState, lastDeltas, balance, boardRows, boardCols, tty: term.tty };
     }
 
+    /** The roster as display names, for the summary screen (see SessionResult.names). The
+     *  transient "(away)" marker is deliberately left off — it describes a live socket, and by the
+     *  time this is read there are none. */
+    function rosterNames(): Record<string, string> {
+      const out: Record<string, string> = {};
+      for (const [id, p] of profiles) out[id] = `${sanitizeText(p.name)}${countryTag(p.country)}`;
+      return out;
+    }
+
     function finish(result: SessionResult): void {
       if (finished) return;
       finished = true;
       clearInterval(ticker);
-      clearTimeout(betTimer);
       offKey();
       try {
         ws.close();
       } catch {
         /* already closing */
       }
-      resolve(result);
+      resolve({ names: rosterNames(), ...result });
     }
 
     // --- rendering ----------------------------------------------------------
@@ -211,19 +210,28 @@ export function playSession(
     /** The footer: (on your turn) the game's control hints + the leave hint. The ephemeral STATUS
      *  line is NOT here — it rides the canvas's reserved note row (see paintBody), so it can appear
      *  and clear without bumping the board upward. This line is always exactly one row, so the
-     *  board's vertical position never changes. */
+     *  board's vertical position never changes.
+     *
+     *  While a transition animation is playing the footer goes BLANK — same rows, no content. The
+     *  footer answers "what can you do right now", and mid-deal (or mid-spin, mid-tumble) the
+     *  answer is nothing: the frames are a cutscene, and offering "[q] leave table" or "[h]it"
+     *  over cards that are still landing invites a keypress the moment isn't ready for. The rows
+     *  stay reserved rather than being dropped, so the board doesn't slide down for the length of
+     *  the animation and snap back when it ends. */
     function footerLines(): string[] {
+      return animating ? footerContent().map(() => "") : footerContent();
+    }
+
+    /** The footer's content, ignoring whether an animation is covering it. */
+    function footerContent(): string[] {
       // A continuous/settle table "leaves"; a one-shot wager match "quits" the app loop.
       // Between rounds the row carries the countdown + stay/leave hints (see leaveHint).
       const leave = leaveHint(
-        ui.completion === "summary" ? "[q] quit" : "[q] leave table",
+        ui.completion === "summary" ? "[m] menu" : "[m] leave table",
         nextRoundAt,
         Date.now(),
         !spectating,
       );
-      // The re-ante window: the input hints live in the bet panel body (betPromptLines) — the
-      // footer keeps just the short leave row, so it can never overflow the 58-col floor.
-      if (awaitingBet) return footerRows([], 1, leave);
       if (spectating) {
         const hints = [dim("spectating")];
         if (queuePos !== null) hints.push(dim(`queued #${queuePos} of ${queueSize} · auto-seated when a seat opens`));
@@ -253,8 +261,6 @@ export function playSession(
 
     /** The game board content lines (or the pre-game lobby panel when there's no view yet). */
     function bodyLines(): string[] {
-      // Between rounds on a staked table: a "place your bet" panel — adjust + lock in.
-      if (awaitingBet) return betPromptLines(betBuf, balance);
       if (view) return ui.render(view, ctx());
       // Pre-game: a lobby / waiting panel. The room code can be shared/attacker-chosen, so strip
       // control bytes before echoing it.
@@ -311,65 +317,9 @@ export function playSession(
 
     // --- between-rounds re-staking -------------------------------
 
-    /** Clamp a bet to [MIN_BET, balance] (the server clamps to its own bounds too). */
-    function clampAnte(v: number): number {
-      const cap = balance !== null ? balance : Number.MAX_SAFE_INTEGER;
-      return Math.max(MIN_BET, Math.min(Math.floor(v) || MIN_BET, cap));
-    }
-
-    /** Send the chosen next-round bet and leave the re-ante window. */
-    function lockBet(): void {
-      if (!awaitingBet) return;
-      clearTimeout(betTimer);
-      awaitingBet = false;
-      antedThisRound = true;
-      nextAnte = clampAnte(nextAnte);
-      statusLine = dim(`anteing ${nextAnte} chips…`);
-      ws.send(encode({ type: "bet", ante: nextAnte }));
-      render();
-    }
-
-    /** Auto-lock the current bet after a beat so a hands-off table keeps dealing. */
-    function armBetAutoLock(): void {
-      clearTimeout(betTimer);
-      betTimer = setTimeout(lockBet, BET_AUTO_LOCK_MS);
-    }
-
-    /** Open the re-ante window: default the bet to the last one, let the player adjust + lock in. */
-    function beginReAnte(): void {
-      awaitingBet = true;
-      nextAnte = clampAnte(nextAnte || opts.ante);
-      betBuf = String(nextAnte);
-      statusLine = dim("place your bet for the next round");
-      armBetAutoLock();
-      render();
-    }
-
-    /** Keys handled while choosing the next round's bet (type any amount, ±25, [space] lock in). */
-    function handleBetKey(k: Key): void {
-      if (k.name === "return" || k.name === "space" || k.char === " ") return lockBet();
-      if (/^[0-9]$/.test(k.char) && betBuf.length < 6) {
-        betBuf = (betBuf === "0" ? "" : betBuf) + k.char;
-      } else if (k.name === "backspace") {
-        betBuf = betBuf.slice(0, -1);
-      } else if (k.char === "+" || k.char === "=") {
-        betBuf = String(clampAnte((Number(betBuf) || 0) + 25));
-      } else if (k.char === "-" || k.char === "_") {
-        betBuf = String(clampAnte((Number(betBuf) || 0) - 25));
-      } else {
-        return;
-      }
-      nextAnte = Number(betBuf) || 0;
-      render();
-    }
-
     function handleKey(k: Key): void {
-      if (k.char === "q" || k.name === "escape") {
+      if (LEAVE_KEYS.chars.includes(k.char) || LEAVE_KEYS.names.includes(k.name ?? "")) {
         finish({ reason: "left" });
-        return;
-      }
-      if (awaitingBet) {
-        handleBetKey(k);
         return;
       }
       if (!myTurn || !view) return;
@@ -556,7 +506,7 @@ export function playSession(
           // follows once the settle completes) — don't imply another deal is coming.
           if (spectating) {
             statusLine = dim(
-              continuous ? (nextRoundAt !== null ? "hand over" : "hand over — [q] leave") : "game over — [q] leave",
+              continuous ? (nextRoundAt !== null ? "hand over" : "hand over — [m] leave") : "game over — [m] leave",
             );
             render();
             break;
@@ -564,7 +514,7 @@ export function playSession(
           if (ui.completion === "continuous") {
             // The footer carries the countdown + stay/leave hints; the status row stays free for
             // the settlement tally. No deadline ⇒ no next round is coming (the table is ending).
-            statusLine = dim(nextRoundAt !== null ? "hand over" : "hand over — [q] leave");
+            statusLine = dim(nextRoundAt !== null ? "hand over" : "hand over — [m] leave");
             render();
           } else if (ui.completion === "settle") {
             // One-shot intrinsic: keep the socket open a beat so the settlement (the cash-out
@@ -581,9 +531,7 @@ export function playSession(
         case "round": {
           prevView = null;
           antedThisRound = false;
-          awaitingBet = false;
           nextRoundAt = null; // the round arrived — close the between-rounds countdown
-          clearTimeout(betTimer);
           roundIdx = msg.roundIdx;
           statusLine = dim(`round ${msg.roundIdx + 1}`);
           render();
@@ -604,7 +552,7 @@ export function playSession(
           // slice is computed from it; the re-ante window shows it).
           const lobbyBal = msg.balances?.[myId];
           if (lobbyBal !== undefined) balance = lobbyBal;
-          if (stake > 0 && !antedThisRound && !awaitingBet && !spectating && !leaving) {
+          if (stake > 0 && !antedThisRound && !spectating && !leaving) {
             if (ui.menu.stake === "bankroll") {
               // Bankroll table (slots): the stake is a SLICE of the live balance — no prompt,
               // no window. min(balance, MAX_ANTE), or min(balance, --ante) when one was passed.
@@ -620,14 +568,23 @@ export function playSession(
               antedThisRound = true;
               statusLine = dim(`staking ${slice} from your balance…`);
               ws.send(encode({ type: "bet", ante: slice }));
-            } else if (roundIdx === 0) {
-              // First round: the stake was just chosen in the menu — ante it straight away.
+            } else {
+              // EVERY round antes the same stake, immediately — the first one because it was just
+              // chosen in the menu, and each one after because the stake is a property of the
+              // TABLE you sat down at, not a per-hand decision. Changing it means leaving and
+              // re-queueing. (There used to be a between-rounds betting window here; it stopped
+              // the table to ask a question almost nobody answered, and it auto-locked the same
+              // number anyway.)
+              if ((balance ?? stake) < stake) {
+                // Can't cover the next hand. Leaving beats silently dropping to a smaller stake
+                // the player never chose, and beats stalling until the server's ante deadline.
+                term.toast("not enough chips for the next hand", { kind: "warn" });
+                finish({ reason: "broke", game: gameId, view });
+                break;
+              }
               antedThisRound = true;
               statusLine = dim(`anteing ${stake} chips…`);
               ws.send(encode({ type: "bet", ante: stake }));
-            } else {
-              // Re-ante between rounds: let the player change their bet before it auto-locks.
-              beginReAnte();
             }
           }
           render();

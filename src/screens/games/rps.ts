@@ -216,7 +216,7 @@ function renderRpsSummary(v: RpsView, nameFor: (id: string) => string, lifetime?
     lines.push("", `${dim("lifetime")}  ${parts.join(dim("  ·  "))}`);
   }
 
-  lines.push("", dim("[space] play again · [m] menu · [q] quit"));
+  lines.push("", dim("[space] play again · [m] menu"));
   return lines;
 }
 

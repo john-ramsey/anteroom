@@ -302,7 +302,7 @@ export const slotsUI: GameUI<SlotsView> = {
       if (lifetime.balance !== undefined) parts.push(`${bold(lifetime.balance.toLocaleString("en-US"))} chips`);
       lines.push("", `${dim("lifetime")}  ${parts.join(dim("  ·  "))}`);
     }
-    lines.push("", dim("[space] sit back down · [m] menu · [q] quit"));
+    lines.push("", dim("[space] sit back down · [m] menu"));
     return lines;
   },
 

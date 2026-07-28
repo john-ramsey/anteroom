@@ -49,12 +49,26 @@ const NO_NAME = [
 export const DOORMAN_GREETINGS: readonly string[] = [...BY_NAME, ...NO_NAME];
 
 /**
- * Pick a doorman greeting. With a name, any line is fair game (the name-lines get filled in);
- * without one, only the standalone lines are used, so a `{name}` placeholder can never leak.
- * `rand` is injectable for deterministic tests.
+ * The name the doorman uses: the FIRST word of whatever you signed in as.
+ *
+ * A GitHub profile name is usually a full name, and "John Ramsey, the felt's been quiet without
+ * you" reads like a summons rather than a welcome — the whole point of these lines is that someone
+ * here knows you. A login or handle ("john-ramsey", "@octocat") has no space to split on and comes
+ * back unchanged. Whitespace-only gives back nothing, so the caller falls through to the standalone
+ * lines instead of greeting a blank. PURE.
+ */
+export function firstName(name: string): string {
+  return name.trim().split(/\s+/)[0] ?? "";
+}
+
+/**
+ * Pick a doorman greeting. With a name, any line is fair game (the name-lines get filled in with
+ * your FIRST name); without one, only the standalone lines are used, so a `{name}` placeholder can
+ * never leak. `rand` is injectable for deterministic tests.
  */
 export function pickDoorman(name?: string, rand: () => number = Math.random): string {
-  const pool = name ? DOORMAN_GREETINGS : NO_NAME;
+  const first = name ? firstName(name) : "";
+  const pool = first ? DOORMAN_GREETINGS : NO_NAME;
   const line = pool[Math.floor(rand() * pool.length)] ?? pool[0]!;
-  return name ? line.replace("{name}", name) : line;
+  return first ? line.replace("{name}", first) : line;
 }

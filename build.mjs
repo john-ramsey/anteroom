@@ -8,12 +8,16 @@
 //   npm run build -w anteroom
 //   ANTEROOM_SERVER=wss://staging.example.com npm run build -w anteroom
 //   ANTEROOM_GITHUB_CLIENT_ID=Iv1.abc123 npm run build -w anteroom   # bake the OAuth id (deploy day)
+import { readFileSync } from "node:fs";
 import { build } from "esbuild";
 
 const server = process.env.ANTEROOM_SERVER || "wss://play.anteroom.johnramsey.com";
+// The published version, read from the package being built — this is what the startup update
+// check compares against the registry, so it has to be the SHIPPED number, not a guess.
+const version = JSON.parse(readFileSync(new URL("package.json", import.meta.url), "utf8")).version;
 
 /** @type {Record<string, string>} */
-const define = { __ANTEROOM_SERVER__: JSON.stringify(server) };
+const define = { __ANTEROOM_SERVER__: JSON.stringify(server), __ANTEROOM_VERSION__: JSON.stringify(version) };
 // Only bake the client id once it exists (after the OAuth app is registered). Until then
 // the bundle omits it and the runtime ANTEROOM_GITHUB_CLIENT_ID / --client-id still work.
 if (process.env.ANTEROOM_GITHUB_CLIENT_ID) {
@@ -31,4 +35,4 @@ await build({
   define,
 });
 
-console.log(`✓ built dist/anteroom.mjs (server=${server}${define.__ANTEROOM_CLIENT_ID__ ? ", client id baked" : ""})`);
+console.log(`✓ built dist/anteroom.mjs (v${version}, server=${server}${define.__ANTEROOM_CLIENT_ID__ ? ", client id baked" : ""})`);

@@ -440,9 +440,21 @@ function selectCategoryWithPreview(term: Terminal, section: Category, games: Men
 /** Client mirror of the server's minimum staked bet — the server clamps too. */
 const MIN_STAKE = 5;
 
-/** The amount editor's body lines: the typed amount with the minimum above it. Pure (testable). */
+/**
+ * The amount editor's body lines: the typed amount, the minimum above it, and the input hints
+ * DIRECTLY BELOW it. The hints used to ride the canvas's reserved note row, which is pinned to the
+ * bottom of the screen — so the instructions for the number you were typing sat a dozen blank rows
+ * away from the number itself. Every line fits the 58-col floor. PURE (testable).
+ */
 export function amountPromptLines(buf: string): string[] {
-  return [dim(`any amount · minimum ${MIN_STAKE} chips`), "", `  ${accent(bold(`${buf || "0"} chips`))}`];
+  return [
+    dim(`any amount · minimum ${MIN_STAKE} chips`),
+    "",
+    accent(bold(`${buf || "0"} chips`)),
+    "",
+    dim("type a number · [+/-] ±25"),
+    dim("[space] or [enter] confirm · [esc] cancel"),
+  ];
 }
 
 /**
@@ -455,11 +467,15 @@ function promptAmount(term: Terminal, title: string, def: number): Promise<numbe
     let buf = String(def);
     const num = (): number => Math.max(0, Math.floor(Number(buf || "0")) || 0);
     const draw = (): void => {
-      screen(term, title, amountPromptLines(buf), "type a number · [+/-] ±25 · enter confirm · esc cancel");
+      // The hints live in the body (amountPromptLines), not the note row — see its docblock.
+      screen(term, title, amountPromptLines(buf));
     };
     draw();
     const off = term.onKey((k) => {
-      if (k.name === "return") {
+      // Space confirms as well as enter: this prompt sits between picking a table and being
+      // matched into it, and every OTHER "lock it in" moment in a staked game is [space] (the
+      // re-ante window, craps/roulette's lock-in). Enter stays for anyone who reaches for it.
+      if (k.name === "return" || k.name === "space" || k.char === " ") {
         off();
         resolve(Math.max(MIN_STAKE, num()));
       } else if (k.name === "escape") {

@@ -273,9 +273,12 @@ export const reversiUI: GameUI<RevView> = {
       "",
       headline,
       "",
-      `${dim("discs")}  ${accent(bold(String(me)))} ${dim("–")} ${accent2(bold(String(opp)))}  ${dim(ctx.nameFor(view.you))}`,
+      // Both sides are NAMED here. The count pair alone ("8 – 56") is only legible if you can see
+      // the two colours, and it used to be followed by a single bare name, which read as a caption
+      // for the whole line rather than for one of the numbers.
+      `${dim("discs")}   ${accent(ctx.nameFor(view.you))} ${accent(bold(String(me)))}   ${dim("–")}   ${accent2(bold(String(opp)))} ${accent2(view.opponent ? ctx.nameFor(view.opponent) : "—")}`,
       "",
-      dim("[space] play again · [m] menu · [q] quit"),
+      dim("[space] play again · [m] menu"),
     ];
   },
 };
