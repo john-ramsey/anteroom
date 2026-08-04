@@ -1,6 +1,6 @@
 {
   "name": "anteroom",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "description": "Anteroom CLI — play quick turn-based games (RPS, Four in a Row, Reversi, Blackjack, Craps, Roulette, Slots) for play-money chips while a long task runs.",
   "license": "MIT",
   "type": "module",

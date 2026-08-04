@@ -15,10 +15,18 @@
  * Both are now unknown tokens: the parser ignores them AND the value that followed them, so a
  * stale command line can't be silently misread.
  */
-import { MAX_ANTE } from "@anteroom/protocol";
+import { MAX_ANTE, MIN_ANTE } from "@anteroom/protocol";
 
 /** Rounds in an RPS series. Fixed — this used to be the `--best-of` flag. */
 export const BEST_OF = 3;
+
+/** A requested `--ante` snapped into what a table will actually accept: 0 (casual, no stake)
+ *  or a real stake inside [MIN_ANTE, MAX_ANTE]. Junk parses to 0. */
+function clampAnte(v: number): number {
+  const n = Math.trunc(v);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return Math.min(MAX_ANTE, Math.max(MIN_ANTE, n));
+}
 
 export interface Args {
   server: string;
@@ -75,7 +83,10 @@ export function parseArgs(argv: string[], defaults: ArgDefaults): Args {
     else if (v === "--room") a.room = argv[++i];
     else if (v === "--name") a.name = argv[++i] ?? a.name;
     else if (v === "--game") a.game = (argv[++i] ?? a.game).toLowerCase();
-    else if (v === "--ante") a.ante = Math.min(MAX_ANTE, Math.max(0, Math.trunc(Number(argv[++i]))));
+    // 0 stays 0 (casual, no stake); any real stake is floored at the house minimum, the same
+    // number the server clamps up to — so `--ante 2` can't compute a 2-chip bankroll slice the
+    // table would refuse.
+    else if (v === "--ante") a.ante = clampAnte(Number(argv[++i]));
     else if (v === "--token") a.token = argv[++i];
     else if (v === "--username") a.username = argv[++i];
     else if (v === "--login") a.login = true;

@@ -153,6 +153,45 @@ export function updateCheckEnabled(env: Record<string, string | undefined> = pro
   return !(on(env["ANTEROOM_NO_UPDATE_CHECK"]) || on(env["NO_UPDATE_NOTIFIER"]) || on(env["CI"]));
 }
 
+/** How this copy of the client got onto the machine, as far as its own path can tell. */
+export type InstallSource = "homebrew" | "npm";
+
+/**
+ * Which install this is, from the resolved path of the running module. PURE.
+ *
+ * The distinction matters because the two are upgraded by different commands, and telling a
+ * Homebrew user to run `npm i -g anteroom` is worse than saying nothing: it does not touch the
+ * brew-managed binary, it installs a SECOND copy, and now which one runs depends on PATH order.
+ *
+ * `/Cellar/` is the only marker that actually separates them:
+ *  - brew stages every formula under `.../Cellar/<name>/<version>/` and installs THIS package by
+ *    running npm into a libexec inside it, so a brew copy's path contains `/node_modules/` too;
+ *  - a plain `npm i -g` on a machine whose Node came from brew lives under the same
+ *    `/opt/homebrew` prefix and is reached through the same `bin/` symlink, so neither the prefix
+ *    nor the symlink proves anything.
+ *
+ * Pass a REAL path (Node resolves symlinks for a module's own URL, which `process.argv[1]` does
+ * not) — through a symlink both installs look identical.
+ */
+export function detectInstallSource(modulePath: string): InstallSource {
+  return /[/\\]Cellar[/\\]/i.test(modulePath) ? "homebrew" : "npm";
+}
+
+/** The command that upgrades THIS install. PURE. */
+export function upgradeCommand(source: InstallSource): string {
+  return source === "homebrew" ? "brew upgrade anteroom" : "npm i -g anteroom";
+}
+
+/**
+ * The "there's a newer version" line, carrying the command that actually applies it. PURE.
+ *
+ * Kept short deliberately: the toast wraps rather than truncates now, but a one-line notice reads
+ * as a notice, and a three-line one reads as an interruption.
+ */
+export function updateToastText(latest: string, source: InstallSource): string {
+  return `update to ${latest}: ${upgradeCommand(source)}`;
+}
+
 export interface FindNewerOpts {
   /**
    * The player's saved preference (`Settings.updateCheck`, toggled on the Settings screen).

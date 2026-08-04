@@ -17,9 +17,20 @@
  *   - "continuous" → a table that stays seated across rounds; resolves only on leave/disconnect.
  *   - "settle"     → one-shot intrinsic; holds the socket open for the settlement, then returns.
  */
-import { encode, decode, MAX_ANTE, type RoomStatus, type ServerMessage } from "@anteroom/protocol";
+import {
+  CLOSE_ANTE_TIMEOUT,
+  CLOSE_BROKE,
+  CLOSE_INACTIVITY,
+  decode,
+  encode,
+  MAX_ANTE,
+  MIN_ANTE,
+  type RoomStatus,
+  type ServerMessage,
+} from "@anteroom/protocol";
 import type { Key, Terminal } from "../terminal.ts";
 import { accent, bold, countryTag, dim, neg, pos, sanitizeText, tallyFrames, warn } from "../ui.ts";
+import { showEvents } from "../events.ts";
 import { screen, sizeCanvas } from "./canvas.ts";
 import { pickWelcome } from "./dealer.ts";
 import { getGameUI } from "./games/registry.ts";
@@ -55,10 +66,19 @@ export interface SessionResult {
   names?: Record<string, string>;
 }
 
+/**
+ * How a server close code becomes what the player is told. The server owns the decision; this is
+ * only the translation. `CLOSE_ANTE_TIMEOUT` maps to `left` rather than a failure, because being
+ * dropped for not confirming in time is not an error to apologize for.
+ */
+const CLOSE_REASONS: Record<number, SessionResult["reason"]> = {
+  [CLOSE_INACTIVITY]: "inactivity",
+  [CLOSE_ANTE_TIMEOUT]: "left",
+  [CLOSE_BROKE]: "broke",
+};
+
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
-/** Minimum staked bet (mirrors the server's minimum — the server clamps too). */
-const MIN_BET = 5;
 /** Show the per-move countdown only inside its final minute. A shared table's 10s clock always
  *  shows; a solo safety-valve clock (slots' 10-minute `moveClockMs`) stays out of the footer
  *  until it actually matters — a number like "600s" reads as pressure, not information. */
@@ -359,7 +379,11 @@ export function playSession(
 
     ws.addEventListener("close", (ev: CloseEvent) => {
       if (finished) return;
-      finish({ reason: ev.code === 4002 ? "inactivity" : "disconnected" });
+      // A close code is the server saying WHY it ended this session. Anything unrecognized is a
+      // real connection failure; a deliberate removal that arrives without a code of its own gets
+      // reported to the player as "disconnected", which blames the network for a decision the
+      // server made on purpose.
+      finish({ reason: CLOSE_REASONS[ev.code] ?? "disconnected" });
     });
     ws.addEventListener("error", () => {
       if (!finished) finish({ reason: "error", message: "connection error" });
@@ -402,7 +426,7 @@ export function playSession(
           const promoted = spectating;
           spectating = false;
           queuePos = null;
-          if (promoted) term.toast("you're in — seated at the table", { kind: "win" });
+          if (promoted) term.toast("you're in, seated at the table", { kind: "win" });
           profiles.set(myId, { name: sanitizeText(msg.you.name), country: msg.you.country });
           // You took a seat BEHIND someone already at the table ⇒ you JOINED an open table (vs
           // created it). A joiner just confirms "joined table {code}"; the host (alone in seat 0)
@@ -560,8 +584,11 @@ export function playSession(
               // straight down from the wallet; the escrow is an invisible detail.
               const cap = opts.ante > 0 ? Math.min(opts.ante, MAX_ANTE) : MAX_ANTE;
               const slice = Math.min(balance ?? cap, cap);
-              if (slice < MIN_BET) {
-                term.toast("out of chips — the machine can't deal you in", { kind: "warn" });
+              if (slice < MIN_ANTE) {
+                // Same voice the SERVER uses when it makes this call itself (see the room's
+                // unseat path): the player should hear one explanation for one situation,
+                // whichever side noticed first.
+                term.toast("Not enough chips for another spin.", { kind: "warn" });
                 finish({ reason: "broke", game: gameId, view });
                 break;
               }
@@ -578,7 +605,13 @@ export function playSession(
               if ((balance ?? stake) < stake) {
                 // Can't cover the next hand. Leaving beats silently dropping to a smaller stake
                 // the player never chose, and beats stalling until the server's ante deadline.
-                term.toast("not enough chips for the next hand", { kind: "warn" });
+                //
+                // This is an OPTIMIZATION, not the rule. The server unseats a player whose ante
+                // is refused regardless (it has to: a client that skips this check, or whose
+                // balance hasn't caught up, must not be able to stall the table). Leaving early
+                // just spares everyone the abort-and-refund round trip that would otherwise
+                // follow. If the two ever disagree, the server wins and nothing breaks.
+                term.toast("Not enough chips for this table.", { kind: "warn" });
                 finish({ reason: "broke", game: gameId, view });
                 break;
               }
@@ -654,6 +687,14 @@ export function playSession(
         case "balance": {
           balance = msg.snapshot.balance;
           render();
+          break;
+        }
+        case "event": {
+          // The generic server-to-client envelope, the same one `/me` hands the menu — a player
+          // already seated hears it here instead. Both go through the ONE sink (events.ts), which
+          // is what makes "announced once, rendered the same way" a property rather than a
+          // coincidence: its seen-set spans this session AND the menu around it.
+          showEvents(term, [msg.event]);
           break;
         }
         case "queue": {

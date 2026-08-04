@@ -21,11 +21,13 @@
  */
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { deleteIdentity, deviceFlowLogin, loadIdentity, saveIdentity } from "./auth.ts";
 import { allocateRoom, fetchLeaderboard, matchmake, MatchmakeCancelled } from "./net.ts";
 import { createTerminal, type Terminal } from "./terminal.ts";
+import { createMeGate } from "./me.ts";
 import { runIntro } from "./screens/intro.ts";
-import { runLeaderboard, runMenu, runAccount } from "./screens/menu.ts";
+import { boundRequestedAnte, runLeaderboard, runMenu, runAccount } from "./screens/menu.ts";
 import { pickDoorman } from "./screens/doorman.ts";
 import { playSession, type SessionResult } from "./screens/session.ts";
 import { runSummary } from "./screens/summary.ts";
@@ -34,7 +36,7 @@ import { loadSettings, saveSettings, pushRecent } from "./settings.ts";
 import { runSetup } from "./setup.ts";
 import { agentWatchDirs, resolveClientId, resolveServer, type AgentWatch } from "./config.ts";
 import { helpText, parseArgs as parseArgsPure, wantsHelp, type Args } from "./args.ts";
-import { findNewerVersion } from "./update.ts";
+import { detectInstallSource, findNewerVersion, updateToastText } from "./update.ts";
 
 // Build-baked prod defaults, injected by esbuild `--define` in build.mjs. Undefined under
 // tsx/dev (the `typeof` guard avoids a ReferenceError on the undeclared global), so local
@@ -372,11 +374,39 @@ async function main(): Promise<void> {
   // it off mid-session applies from the next launch — by then this has already fired or not.)
   if (BAKED_VERSION !== undefined && term.tty) {
     void findNewerVersion(BAKED_VERSION, { enabled: settings.updateCheck }).then((latest) => {
-      if (latest) term.toast(`anteroom ${latest} is out (you have ${BAKED_VERSION}) · npm i -g anteroom`, { kind: "info", ms: 8000 });
+      // The command has to match how THIS copy was installed: `npm i -g` does not upgrade a
+      // brew-managed binary, it adds a second one to PATH. Read from the module's own resolved
+      // path, which follows symlinks (both installs share the same `bin/` symlink, so the thing
+      // you were invoked as cannot tell them apart).
+      if (latest) {
+        const source = detectInstallSource(fileURLToPath(import.meta.url));
+        term.toast(updateToastText(latest, source), { kind: "info", ms: 8000 });
+      }
     });
   }
   const flagRequest = initialRequest(args);
   let stopClaudeWatch: () => void = () => {};
+
+  // Ask the server where we stand BEFORE anything is staked, so the round trip overlaps the intro
+  // (or the usage line) instead of delaying it. Asked here, ahead of the TTY split, because BOTH
+  // ways in need the answer: `/me` is what tops a broke player back up, and it bounds every stake
+  // so a table can't be entered at one the wallet can't cover. It used to be created inside the
+  // interactive branch, which meant a flag launch (`anteroom --game blackjack`, the plugin's path)
+  // sat down at a table with no recovery and no ceiling. Re-asked after each game (the balance
+  // moved) and after a sign-out (it's a different wallet now). An unreachable server just leaves
+  // the position unknown, and the table has the last word exactly as it did before.
+  const me = createMeGate(term, args.server);
+  // …but not for the one launch that never plays: a piped run with no flags prints its usage line
+  // and exits, and an in-flight request would hold the process open waiting for an answer nobody
+  // is going to read.
+  if (term.tty || flagRequest) me.ask(identity);
+
+  /** Bound a stake by the wallet, saying so if it moved, and hand back the request to play. */
+  const bounded = (req: PlayRequest): PlayRequest => {
+    const { ante, note } = boundRequestedAnte(req.ante, me.spendable);
+    if (note) term.toast(note, { kind: "warn" });
+    return ante === req.ante ? req : { ...req, ante };
+  };
 
   try {
     if (!term.tty) {
@@ -388,7 +418,10 @@ async function main(): Promise<void> {
         );
         return;
       }
-      const result = await startPlay(term, args.server, identity, flagRequest);
+      // Take delivery before staking anything. Off a TTY `term.toast` logs its line rather than
+      // overlaying it, so a top-up here is still announced rather than being a silent change.
+      await me.absorb();
+      const result = await startPlay(term, args.server, identity, bounded(flagRequest));
       if (result.reason === "completed" && result.game && result.view !== undefined) {
         // Non-interactive: print the summary once (don't block on a keypress).
         const ui = getGameUI(result.game);
@@ -430,7 +463,8 @@ async function main(): Promise<void> {
         req = pending;
         pending = null;
       } else {
-        const action = await runMenu(term, greeting(), settings.recent);
+        await me.absorb();
+        const action = await runMenu(term, greeting(), settings.recent, me.spendable);
         if (action.type === "quit") break;
         if (action.type === "leaderboard") {
           await runLeaderboard(term, args.server, selfId);
@@ -446,6 +480,10 @@ async function main(): Promise<void> {
             await deleteIdentity();
             identity = { name: args.name, display: args.name !== "anon" ? args.name : undefined };
             selfId = undefined;
+            // A different wallet (or none): drop the old figure rather than bounding the next
+            // stake prompt by the balance of the account that just signed out.
+            me.forget();
+            me.ask(identity);
           }
           continue;
         }
@@ -473,7 +511,15 @@ async function main(): Promise<void> {
         }
       }
 
-      const result = await startPlay(term, args.server, identity, req);
+      // Take delivery before the chips are staked, not after. Every way into this line has one in
+      // flight: the menu path already absorbed (so this is a no-op), while a flag launch and a
+      // "play again" arrive here with the answer still on the wire — and those are exactly the
+      // paths where a top-up is owed, since a player only reaches them by running out at a table.
+      await me.absorb();
+      const result = await startPlay(term, args.server, identity, bounded(req));
+      // The balance moved. Re-ask now so the round trip overlaps the summary screen, carrying
+      // the acks for whatever the last one delivered.
+      me.ask(identity);
       if (result.reason === "completed" && result.game && result.view !== undefined) {
         // One-shot match summary (RPS, four-in-a-row, …) — rendered by the game's GameUI.
         const next = await runSummary(
@@ -498,8 +544,22 @@ async function main(): Promise<void> {
         screen(term, "Table closed", [dim(result.message ?? "the table ended")], "any key to return");
         await term.readKey();
       } else if (result.reason === "broke") {
-        // A bankroll table couldn't re-stake: the wallet is below the minimum bet.
-        screen(term, "Out of chips", [neg("your balance can't cover the minimum bet")], "any key to return");
+        // Left a table the wallet couldn't re-stake, either because this client saw it coming or
+        // because the server unseated the seat. It used to say "Out of chips", which is usually
+        // false: what ran out was enough for THAT table's stake, and someone with 60 chips turned
+        // away from a 100-chip table has plenty left for a cheaper one. Take delivery of the
+        // in-flight /me first, so the screen states the position the player actually holds, and
+        // so the manager's line (if they were topped up) is already on screen underneath it.
+        await me.absorb();
+        screen(
+          term,
+          "Left the table",
+          [
+            neg("your balance couldn't cover that table's stake"),
+            ...(me.spendable === null ? [] : [dim(`you have ${me.spendable} chips to play with`)]),
+          ],
+          "any key to pick another table",
+        );
         await term.readKey();
       }
       // left / disconnected / continuous/settle completed → back to the menu

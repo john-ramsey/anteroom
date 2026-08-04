@@ -16,6 +16,31 @@ export type RoomStatus = "lobby" | "ante" | "playing" | "settling" | "complete";
  *  caps its stake picker + `--ante` to match. Keeps the pot arithmetic sane. */
 export const MAX_ANTE = 200;
 
+/** The house minimum: the smallest stake any table accepts (chips). ONE number, here,
+ *  because both sides must agree on it — the Room clamps a staked table UP to it and the
+ *  client's stake picker floors at it. A player is "broke" exactly when their balance can't
+ *  cover this. The slots LINE bet carries its own copy (engine keeps zero runtime deps and
+ *  so can't import this); `server/test/minAnte.test.ts` is the drift guard.
+ *
+ *  This is the floor on what you STAKE at a table, not on every bet inside a hand: once you've
+ *  bought in, a craps or roulette placement out of your own stack only has to be a positive
+ *  integer within it. Don't extend this constant into the engine's per-bet validation. */
+export const MIN_ANTE = 5;
+
+/**
+ * WebSocket close codes the SERVER uses to say why it ended a session. Both sides must agree, so
+ * they are defined once here, like `MIN_ANTE`: the Room closes with one and the client turns it
+ * into what the player reads. An unrecognized code is a genuine connection failure, which is why
+ * every deliberate server-side removal needs a code of its own — without one it reports to the
+ * player as "disconnected", blaming the network for a decision the server made on purpose.
+ *
+ * 4000-4999 is the range reserved for application use.
+ */
+export const CLOSE_INACTIVITY = 4002;
+export const CLOSE_ANTE_TIMEOUT = 4003;
+/** Unseated because their balance could not cover this table's stake. */
+export const CLOSE_BROKE = 4004;
+
 export interface PlayerInfo {
   /** Stable player id: a verified `gh:<numericId>` (token join) or the display name
    *  (tokenless dev join). The server keys the player's chips and match seat off this. */
@@ -77,6 +102,64 @@ export interface WalletSnapshot {
   available: number;
   /** Reserved by open holds. */
   held: number;
+}
+
+/**
+ * Something the SERVER needs to tell one player about, outside the flow of a game.
+ *
+ * The envelope is deliberately game-agnostic and open-ended, because the alternative is a new
+ * field on a new payload every time the server acquires something to say. `text` is always a
+ * complete, human-readable sentence, so a client that has never heard of a `kind` still renders
+ * the event correctly — that forward compatibility is the whole point of carrying prose.
+ *
+ * `text` is UNTRUSTED at the client: it is rendered into a terminal, so it passes through the
+ * same control-byte stripping as any other server-supplied string.
+ */
+export interface ServerEvent {
+  /** Stable id, for acknowledging delivery and for dropping a duplicate. */
+  id: string;
+  /** What happened. Known kinds: `topup`. Unknown kinds still render their `text`. */
+  kind: string;
+  /** The message as the player should read it. */
+  text: string;
+  /** Optional machine-readable payload for clients that know this `kind`. Opaque here. */
+  data?: unknown;
+  /** When the server raised it (epoch ms). */
+  ts: number;
+}
+
+/**
+ * How many events one response carries, how many the mailbox holds, and how many ids an ack may
+ * name. Deliberately ONE number: a response returns the whole mailbox, so an event beyond this
+ * could never be delivered anyway, and every use of it bounds work the server does on a caller's
+ * say-so.
+ */
+export const MAX_EVENTS_PER_FETCH = 20;
+
+/**
+ * `POST /me` request body. The menu asks the server where it stands before it offers a stake.
+ *
+ * Credentials do NOT ride in the body or the query string: the GitHub token goes in the
+ * `Authorization: Bearer` header, so it can't be logged or cached alongside the URL. `name`
+ * only names a tokenless DEV identity (guest play, off in production) — it is never how a
+ * verified player is identified, since anyone could send anyone's name.
+ */
+export interface MeRequest {
+  name?: string;
+  /** Ids of events this client has ALREADY shown the player. The server drops those and keeps
+   *  redelivering anything else, so an event survives a response that never arrived — the ack
+   *  rides a request the menu was making anyway, rather than costing a round trip of its own. */
+  ack?: string[];
+}
+
+/** `POST /me` response: the authoritative chip position, straight from the Wallet DO (never
+ *  the lagging D1 mirror the leaderboard reads — this is what a stake is sized against), plus
+ *  anything the server has been waiting to tell this player. */
+export interface MeResponse {
+  snapshot: WalletSnapshot;
+  /** Undelivered events, oldest first. Absent when there are none. Redelivered until acked, so
+   *  a client must drop ids it has already rendered. */
+  events?: ServerEvent[];
 }
 
 /** Client -> Server. */
@@ -178,6 +261,10 @@ export type ServerMessage =
   | { type: "table_end"; reason: "players" }
   // Pushed to a player after a grant/settle so the client can refresh its display.
   | { type: "balance"; snapshot: WalletSnapshot }
+  // Something the server needs to tell THIS player, unrelated to the board (see ServerEvent).
+  // The same envelope `/me` carries, so one client-side sink renders both: a player at a table
+  // hears it here, a player at the menu hears it on their next `/me`.
+  | { type: "event"; event: ServerEvent }
   // --- matchmaker channel (the /find socket, not a room) -------------------
   // Queued. `etaMs` is this waiter's own soft deadline for being matched. `minMs`/`maxMs` are the
   // SOFT window bounds the client shows as an "est. wait" range — deliberately a band, not an exact

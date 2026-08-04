@@ -292,22 +292,91 @@ export function box(title: string, lines: string[]): string {
 // --- toasts -----------------------------------------------------------------
 
 /**
- * A compact toast notification: a 3-line rounded box tinted by `kind` (win → pos, warn →
- * warn, info → accent) with a leading icon. `message` should be PLAIN text (it's capped and
- * bolded here). The terminal overlays these at the screen's top-right — see `term.toast`.
+ * Widest a toast LINE gets, in visible characters, including the two-character icon column.
+ * A longer message WRAPS onto further lines rather than being cut off.
+ *
+ * That distinction is the whole point. This used to be a hard clip, which made it a hidden
+ * contract on everyone who writes a toast — including the server, whose `ServerEvent` prose is
+ * painted through here and whose own cap (200) is four times looser. Three separate messages
+ * shipped truncated because of it, the worst being an update notice that lost the
+ * `npm i -g anteroom` telling you what to do about it. A renderer that silently drops half a
+ * sentence is a bug in the renderer, not a rule for its callers to memorize.
+ */
+export const TOAST_MAX_CHARS = 44;
+
+/**
+ * How many message rows one toast may occupy before it really is truncated. A bound is still
+ * needed — a toast overlays the board, and server-supplied text is untrusted, so "wrap forever"
+ * would let one message paint over the whole screen.
+ */
+export const TOAST_MAX_LINES = 3;
+
+/**
+ * Greedy word wrap to `width` visible columns, at most `maxLines` rows; the last row is
+ * ellipsized if anything is left over. A single word longer than `width` is hard-split rather
+ * than allowed to overflow. PURE.
+ *
+ * The row count is not on its own proof that everything fit. A hard-split run can fill the last
+ * row and still have a tail in hand — and the loop that abandons that tail is the same one that
+ * stops producing rows, so "we made exactly `maxLines`" reads as complete when it isn't. `dropped`
+ * is what the loops actually know: text was left behind, so the ellipsis is owed.
+ */
+export function wrapToLines(text: string, width: number, maxLines: number): string[] {
+  const words = text.split(/\s+/).filter(Boolean);
+  const lines: string[] = [];
+  let line = "";
+  let dropped = false;
+  const push = (): void => {
+    if (line) lines.push(line);
+    line = "";
+  };
+  for (const [i, original] of words.entries()) {
+    let word = original;
+    while (visibleLen(word) > width) {
+      // A single unbreakable run (a URL, a pasted id): split it rather than overflow the box.
+      push();
+      lines.push(word.slice(0, width));
+      word = word.slice(width);
+      if (lines.length >= maxLines) break;
+    }
+    if (lines.length >= maxLines) {
+      // Out of rows: whatever is still in `word`, plus every word after it, is being dropped.
+      dropped = dropped || word.length > 0 || i < words.length - 1;
+      break;
+    }
+    if (!line) line = word;
+    else if (visibleLen(line) + 1 + visibleLen(word) <= width) line += ` ${word}`;
+    else {
+      push();
+      line = word;
+    }
+  }
+  push();
+  if (lines.length <= maxLines && !dropped) return lines.length > 0 ? lines : [""];
+  const kept = lines.slice(0, maxLines);
+  const last = kept[maxLines - 1]!;
+  kept[maxLines - 1] = visibleLen(last) >= width ? last.slice(0, width - 1) + "…" : last + "…";
+  return kept;
+}
+
+/**
+ * A toast notification: a rounded box tinted by `kind` (win → pos, warn → warn, info → accent)
+ * with a leading icon, wrapping to at most `TOAST_MAX_LINES` message rows. `message` should be
+ * PLAIN text (it's wrapped and bolded here). The terminal overlays these at the screen's
+ * top-right — see `term.toast`, and `composeToasts`, which already stacks by line count.
  */
 export function renderToast(message: string, kind: "info" | "win" | "warn" = "info"): string[] {
   const tint = kind === "win" ? pos : kind === "warn" ? warn : accent;
   const icon = kind === "win" ? "✓" : kind === "warn" ? "!" : "●";
-  const max = 44;
   // `message` is often untrusted (an opponent name, a server error) — strip terminal-control bytes
   // before it's boxed and painted, so it can't smuggle escape sequences to the TTY (see sanitizeText).
-  const raw = `${icon} ${sanitizeText(message)}`;
-  const text = visibleLen(raw) > max ? raw.slice(0, max - 1) + "…" : raw;
-  const inner = visibleLen(text);
+  // The icon column is reserved on EVERY row, so continuation lines hang under the text.
+  const body = wrapToLines(sanitizeText(message), TOAST_MAX_CHARS - 2, TOAST_MAX_LINES);
+  const rows = body.map((line, i) => `${i === 0 ? `${icon} ` : "  "}${line}`);
+  const inner = Math.max(...rows.map(visibleLen));
   return [
     tint("╭" + "─".repeat(inner + 2) + "╮"),
-    tint("│ ") + bold(text) + tint(" │"),
+    ...rows.map((r) => tint("│ ") + bold(r + " ".repeat(inner - visibleLen(r))) + tint(" │")),
     tint("╰" + "─".repeat(inner + 2) + "╯"),
   ];
 }

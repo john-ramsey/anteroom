@@ -7,9 +7,10 @@
  * NO hand-numbered switch and no hardcoded game list. A new game appears in the menu the
  * moment it's registered, with its stake prompt + matchmaking driven by its `menu` spec.
  */
+import { MAX_ANTE, MIN_ANTE } from "@anteroom/protocol";
 import type { Key, Terminal } from "../terminal.ts";
 import { fetchLeaderboard } from "../net.ts";
-import { accent, bold, center, dim, padEndVisible, renderLeaderboard, sanitizeText, truncVisible, visibleLen, type LeaderboardSort } from "../ui.ts";
+import { accent, bold, center, dim, padEndVisible, renderLeaderboard, sanitizeText, truncVisible, visibleLen, warn, type LeaderboardSort } from "../ui.ts";
 import { screen, sizeCanvas, type Geom } from "./canvas.ts";
 import { getGameUI, listGameUIs } from "./games/registry.ts";
 import type { GameCtx, GameUI } from "./games/types.ts";
@@ -437,20 +438,106 @@ function selectCategoryWithPreview(term: Terminal, section: Category, games: Men
   });
 }
 
-/** Client mirror of the server's minimum staked bet — the server clamps too. */
-const MIN_STAKE = 5;
+/** What `stakeCeiling` returns when the player can't cover the house minimum right now. */
+export const NO_LEGAL_STAKE = 0;
 
 /**
- * The amount editor's body lines: the typed amount, the minimum above it, and the input hints
+ * The largest stake this player can actually put up: the table cap, or their SPENDABLE chips
+ * when that is smaller (available, not total — chips under an open hold can't be staked again).
+ *
+ * An unknown figure (null — `/me` unreachable) falls back to the table cap. An outage must not
+ * block play: the table still has the last word, exactly as it did before the menu could ask.
+ *
+ * Returns **0** for a known position under the house minimum, meaning "no legal stake" — the one
+ * answer a ceiling can give that isn't a number to type. It used to floor at MIN_ANTE, which
+ * manufactured a stake out of 0 to 4 chips and opened a prompt whose every answer the table
+ * refuses. Being BROKE is not what puts a player here (the top-up handles that, and it keys off
+ * the balance): this is a healthy balance with nearly all of it under an open hold, so `/me`
+ * rightly leaves it alone and the chips come back on their own. PURE.
+ */
+export function stakeCeiling(spendable: number | null): number {
+  if (spendable === null || !Number.isFinite(spendable)) return MAX_ANTE;
+  const whole = Math.floor(spendable);
+  if (whole < MIN_ANTE) return NO_LEGAL_STAKE;
+  return Math.min(MAX_ANTE, whole);
+}
+
+/**
+ * Bound a stake the player named on the COMMAND LINE (`--ante 500`) by what their wallet can
+ * actually put up, and say so when it moves. The menu's editor already works this way — it shows
+ * `250 chips → 40` before you confirm — and a flag deserves the same courtesy in the one form a
+ * flag has: a line of text. Silently staking a different number than the one you typed is the
+ * failure to avoid; refusing the launch outright is the other one, and it would waste the top-up
+ * we just performed.
+ *
+ * The note names WHICH limit bound the number, because the two are different facts and only one
+ * of them is about the player's money: a 500 clamped to 200 on a full wallet is the table's limit,
+ * and telling someone that is all they can put up would be plainly false to anyone who just read
+ * their balance.
+ *
+ * Two cases are deliberately left ALONE. A casual game (ante 0) has no stake to bound. And a
+ * wallet with no legal stake at all keeps the requested number rather than being clamped to zero:
+ * turning a staked game into a free one is not a smaller version of what was asked for, so the
+ * table refuses it and the client explains why. PURE.
+ */
+export function boundRequestedAnte(
+  ante: number,
+  spendable: number | null,
+): { ante: number; note?: string } {
+  const ceiling = stakeCeiling(spendable);
+  if (ante <= 0 || ceiling === NO_LEGAL_STAKE || ante <= ceiling) return { ante };
+  const why = ceiling === MAX_ANTE ? "the most this table takes" : "all you can put up";
+  return { ante: ceiling, note: `asked for ${ante}, staking ${ceiling} (${why})` };
+}
+
+/**
+ * What to say to a player whose chips are all reserved. Names the number when we have one, because
+ * "you have 2 free" and "a table needs 5" together are the whole explanation. It ends on the fact
+ * that makes it not a dead end: nobody has to do anything, the hold clears itself. PURE (testable,
+ * and every line fits the 58-column canvas floor).
+ */
+export function tiedUpLines(spendable: number | null): string[] {
+  return [
+    warn("your chips are tied up right now"),
+    ...(spendable === null
+      ? []
+      : [dim(`${Math.max(0, Math.floor(spendable))} of them are free, and a table needs ${MIN_ANTE}`)]),
+    "",
+    dim("they come back as soon as that hand settles"),
+  ];
+}
+
+/** Snap an amount into what the table will take: [MIN_ANTE, ceiling], whole chips. PURE. */
+export function clampStake(amount: number, ceiling: number): number {
+  const n = Math.floor(amount);
+  if (!Number.isFinite(n)) return MIN_ANTE;
+  return Math.min(ceiling, Math.max(MIN_ANTE, n));
+}
+
+/**
+ * The amount editor's body lines: the typed amount, the bounds above it, and the input hints
  * DIRECTLY BELOW it. The hints used to ride the canvas's reserved note row, which is pinned to the
  * bottom of the screen — so the instructions for the number you were typing sat a dozen blank rows
  * away from the number itself. Every line fits the 58-col floor. PURE (testable).
+ *
+ * The `max` is named ONLY when the wallet is what binds. The menu is not a bank statement: the
+ * balance surfaces where it acts on a decision and nowhere else — and at the floor ("minimum 5 ·
+ * max 5") it would be noise.
+ *
+ * An amount above the ceiling shows what confirming will ACTUALLY stake (`250 chips → 40`),
+ * because the confirm snaps it down and that is only fair if you can see it coming. It says so
+ * in TEXT, not by colour alone: colour is off whenever output isn't a TTY or NO_COLOR is set,
+ * and it's the first thing a colour-blind player loses.
  */
-export function amountPromptLines(buf: string): string[] {
+export function amountPromptLines(buf: string, ceiling = MAX_ANTE): string[] {
+  const capped = ceiling > MIN_ANTE && ceiling < MAX_ANTE;
+  const typed = Math.floor(Number(buf || "0"));
+  const over = Number.isFinite(typed) && typed > ceiling;
+  const amount = `${buf || "0"} chips${over ? ` → ${ceiling}` : ""}`;
   return [
-    dim(`any amount · minimum ${MIN_STAKE} chips`),
+    dim(`any amount · minimum ${MIN_ANTE} chips${capped ? ` · max ${ceiling}` : ""}`),
     "",
-    accent(bold(`${buf || "0"} chips`)),
+    over ? warn(bold(amount)) : accent(bold(amount)),
     "",
     dim("type a number · [+/-] ±25"),
     dim("[space] or [enter] confirm · [esc] cancel"),
@@ -458,17 +545,27 @@ export function amountPromptLines(buf: string): string[] {
 }
 
 /**
- * A free-form numeric amount editor for a staked game's stake / buy-in: type any
- * number, ±25 with +/-, a minimum enforced. Resolves the chosen amount (≥ MIN_STAKE),
- * or −1 on cancel (esc) so the caller can back out.
+ * A free-form numeric amount editor for a staked game's stake / buy-in: type any number, ±25
+ * with +/-, bounded by [MIN_ANTE, ceiling]. Resolves the chosen amount, or −1 on cancel (esc)
+ * so the caller can back out.
+ *
+ * The default is clamped to the ceiling before it is ever shown: opening a prompt pre-filled
+ * with a number the wallet can't cover is the dead end this exists to remove. Typing is left
+ * free (live clamping fights the keyboard — typing "100" would fight you at "1", "10"); the
+ * over-ceiling amount is marked instead, and confirming snaps it down.
  */
-function promptAmount(term: Terminal, title: string, def: number): Promise<number> {
+export function promptAmount(
+  term: Terminal,
+  title: string,
+  def: number,
+  ceiling = MAX_ANTE,
+): Promise<number> {
   return new Promise((resolve) => {
-    let buf = String(def);
+    let buf = String(clampStake(def, ceiling));
     const num = (): number => Math.max(0, Math.floor(Number(buf || "0")) || 0);
     const draw = (): void => {
       // The hints live in the body (amountPromptLines), not the note row — see its docblock.
-      screen(term, title, amountPromptLines(buf));
+      screen(term, title, amountPromptLines(buf, ceiling));
     };
     draw();
     const off = term.onKey((k) => {
@@ -477,7 +574,7 @@ function promptAmount(term: Terminal, title: string, def: number): Promise<numbe
       // re-ante window, craps/roulette's lock-in). Enter stays for anyone who reaches for it.
       if (k.name === "return" || k.name === "space" || k.char === " ") {
         off();
-        resolve(Math.max(MIN_STAKE, num()));
+        resolve(clampStake(num(), ceiling));
       } else if (k.name === "escape") {
         off();
         resolve(-1);
@@ -488,10 +585,12 @@ function promptAmount(term: Terminal, title: string, def: number): Promise<numbe
         buf = buf.slice(0, -1);
         draw();
       } else if (k.char === "+" || k.char === "=") {
-        buf = String(num() + 25);
+        // The steps land on a real amount, so they stop at the wallet rather than stepping
+        // past it into a number the confirm would silently take back.
+        buf = String(clampStake(num() + 25, ceiling));
         draw();
       } else if (k.char === "-" || k.char === "_") {
-        buf = String(Math.max(MIN_STAKE, num() - 25));
+        buf = String(clampStake(num() - 25, ceiling));
         draw();
       }
     });
@@ -537,6 +636,10 @@ export async function runMenu(
   term: Terminal,
   who: string,
   recent: string[] = [],
+  /** What the player can actually put up right now (the wallet's AVAILABLE chips), or null when
+   *  `/me` couldn't say. It never appears on screen — it only bounds the stake prompts, so a
+   *  table can't be entered at a stake the wallet can't cover. See `stakeCeiling`. */
+  spendable: number | null = null,
   initial?: number,
 ): Promise<MenuAction> {
   const games = listGameUIs();
@@ -547,23 +650,23 @@ export async function runMenu(
   // On every back-out we re-enter the home menu with the cursor restored to `choice`.
   if (row.kind === "game") {
     // A Recent shortcut: straight to the stake prompt + play (backing out returns home).
-    const action = await stakeThenPlay(term, row);
-    return action ?? runMenu(term, who, recent, choice);
+    const action = await stakeThenPlay(term, row, spendable);
+    return action ?? runMenu(term, who, recent, spendable, choice);
   }
   if (row.kind === "submenu") {
     // Drill into the Casual / Stakes game list; backing out returns home.
-    const action = await runCategory(term, row.section, games);
-    return action ?? runMenu(term, who, recent, choice);
+    const action = await runCategory(term, row.section, games, spendable);
+    return action ?? runMenu(term, who, recent, spendable, choice);
   }
   if (row.kind === "action") {
     if (row.action === "joinRoom") {
       const code = await promptRoomCode(term);
-      if (!code) return runMenu(term, who, recent, choice); // cancelled the code entry
+      if (!code) return runMenu(term, who, recent, spendable, choice); // cancelled the code entry
       return { type: "joinRoom", code };
     }
     return { type: row.action };
   }
-  return runMenu(term, who, recent, choice); // headers/rules aren't selectable — defensive
+  return runMenu(term, who, recent, spendable, choice); // headers/rules aren't selectable — defensive
 }
 
 /** Run a game's stake prompt (a wager ante, a craps buy-in, or none for Casual/bankroll — a
@@ -573,10 +676,19 @@ export async function runMenu(
 async function stakeThenPlay(
   term: Terminal,
   g: { id: string; title: string; stake: GameUI["menu"]["stake"]; defaultStake?: number; find: boolean },
+  spendable: number | null,
 ): Promise<MenuAction | null> {
   let ante = 0;
-  if (g.stake === "wager") ante = await selectStake(term, g.title, g.defaultStake);
-  else if (g.stake === "buyin") ante = await selectBuyIn(term, g.title, g.defaultStake);
+  const ceiling = stakeCeiling(spendable);
+  // No legal stake: the chips are there but reserved, so there is nothing to type. Say so and
+  // hand the player back to the list, instead of walking them into the table's refusal.
+  if (ceiling === NO_LEGAL_STAKE && g.stake !== "none") {
+    screen(term, g.title, tiedUpLines(spendable), "any key to go back");
+    await term.readKey();
+    return null;
+  }
+  if (g.stake === "wager") ante = await selectStake(term, g.title, g.defaultStake, ceiling);
+  else if (g.stake === "buyin") ante = await selectBuyIn(term, g.title, g.defaultStake, ceiling);
   if (ante < 0) return null;
   return { type: "play", game: g.id, ante, find: g.find };
 }
@@ -584,7 +696,12 @@ async function stakeThenPlay(
 /** The Casual / Stakes submenu: that category's games (+ Back). A pick flows through the stake
  *  prompt to a `play` action; q/esc/Back returns null (caller re-shows the home menu). Backing out
  *  of a game's stake prompt loops back to this list, not all the way home. */
-async function runCategory(term: Terminal, section: Category, games: MenuGame[]): Promise<MenuAction | null> {
+async function runCategory(
+  term: Terminal,
+  section: Category,
+  games: MenuGame[],
+  spendable: number | null,
+): Promise<MenuAction | null> {
   const inSection = categoryGames(games, section);
   let sel = 0; // remember the row so backing out of a game's stake prompt returns to it
   for (;;) {
@@ -592,13 +709,17 @@ async function runCategory(term: Terminal, section: Category, games: MenuGame[])
     if (i < 0 || i >= inSection.length) return null; // q/esc or the "Back" row
     sel = i;
     const g = inSection[i]!;
-    const action = await stakeThenPlay(term, {
-      id: g.id,
-      title: g.title,
-      stake: g.menu.stake,
-      defaultStake: g.menu.defaultStake,
-      find: g.menu.find,
-    });
+    const action = await stakeThenPlay(
+      term,
+      {
+        id: g.id,
+        title: g.title,
+        stake: g.menu.stake,
+        defaultStake: g.menu.defaultStake,
+        find: g.menu.find,
+      },
+      spendable,
+    );
     if (action) return action;
   }
 }
@@ -638,13 +759,13 @@ export function promptRoomCode(term: Terminal): Promise<string | null> {
   });
 }
 
-async function selectStake(term: Terminal, game: string, def = 50): Promise<number> {
-  return promptAmount(term, `${game} — choose your stake`, def);
+async function selectStake(term: Terminal, game: string, def = 50, ceiling = MAX_ANTE): Promise<number> {
+  return promptAmount(term, `${game} — choose your stake`, def, ceiling);
 }
 
 /** The buy-in is the table stack you bet from (and what you cash out against). */
-async function selectBuyIn(term: Terminal, game: string, def = 100): Promise<number> {
-  return promptAmount(term, `${game} — choose your buy-in`, def);
+async function selectBuyIn(term: Terminal, game: string, def = 100, ceiling = MAX_ANTE): Promise<number> {
+  return promptAmount(term, `${game} — choose your buy-in`, def, ceiling);
 }
 
 /** Flip the leaderboard ranking between chips and W/L. */
